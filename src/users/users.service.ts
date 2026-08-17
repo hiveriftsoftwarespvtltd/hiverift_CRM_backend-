@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { User, UserDocument } from './schemas/user.schema';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
@@ -17,7 +17,13 @@ export class UsersService {
     if (existing) {
       throw new BadRequestException('User with this email already exists');
     }
-    const user = new this.userModel(createUserDto);
+    const payload: any = { ...createUserDto };
+    if (payload.reportingTo && Types.ObjectId.isValid(payload.reportingTo)) {
+      payload.reportingTo = new Types.ObjectId(payload.reportingTo);
+    } else {
+      delete payload.reportingTo;
+    }
+    const user = new this.userModel(payload);
     return user.save();
   }
 
@@ -41,10 +47,11 @@ export class UsersService {
     const [users, total] = await Promise.all([
       this.userModel
         .find(filter)
+        .populate('reportingTo', 'name email role designation isDepartmentHead')
         .select('-password -refreshToken')
         .skip(skip)
         .limit(Number(limit))
-        .sort({ createdAt: -1 }),
+        .sort({ isDepartmentHead: -1, createdAt: -1 }),
       this.userModel.countDocuments(filter),
     ]);
 
@@ -52,7 +59,10 @@ export class UsersService {
   }
 
   async findOne(id: string): Promise<UserDocument> {
-    const user = await this.userModel.findById(id).select('-password -refreshToken');
+    const user = await this.userModel
+      .findById(id)
+      .populate('reportingTo', 'name email role designation isDepartmentHead')
+      .select('-password -refreshToken');
     if (!user) throw new NotFoundException('User not found');
     return user;
   }
@@ -80,11 +90,18 @@ export class UsersService {
   }
 
   async update(id: string, updateUserDto: UpdateUserDto): Promise<UserDocument> {
-    if (updateUserDto.password) {
-      updateUserDto.password = await bcrypt.hash(updateUserDto.password, 12);
+    const payload: any = { ...updateUserDto };
+    if (payload.password) {
+      payload.password = await bcrypt.hash(payload.password, 12);
+    }
+    if (payload.reportingTo && Types.ObjectId.isValid(payload.reportingTo)) {
+      payload.reportingTo = new Types.ObjectId(payload.reportingTo);
+    } else if (payload.reportingTo === '' || payload.reportingTo === null) {
+      payload.reportingTo = null;
     }
     const user = await this.userModel
-      .findByIdAndUpdate(id, updateUserDto, { new: true })
+      .findByIdAndUpdate(id, payload, { new: true })
+      .populate('reportingTo', 'name email role designation isDepartmentHead')
       .select('-password -refreshToken');
     if (!user) throw new NotFoundException('User not found');
     return user;

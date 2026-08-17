@@ -60,6 +60,9 @@ export class Quotation {
   })
   status: string;
 
+  @Prop({ type: String, default: 'sales_standard' })
+  templateType: string;
+
   @Prop()
   notes: string;
 

@@ -2,12 +2,14 @@ import { Injectable, NotFoundException, BadRequestException } from '@nestjs/comm
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Quotation, QuotationDocument } from './schemas/quotation.schema';
+import { Payment, PaymentDocument } from '../payments/schemas/payment.schema';
 import { MailService } from '../common/services/mail.service';
 
 @Injectable()
 export class QuotationsService {
   constructor(
     @InjectModel(Quotation.name) private quotationModel: Model<QuotationDocument>,
+    @InjectModel(Payment.name) private paymentModel: Model<PaymentDocument>,
     private mailService: MailService,
   ) {}
 
@@ -33,6 +35,69 @@ export class QuotationsService {
     return `QUO-${year}-${String(nextNum).padStart(4, '0')}`;
   }
 
+  private async syncQuotationPayment(quotation: QuotationDocument, userId?: string) {
+    if (!quotation || !quotation.totalAmount) return;
+
+    try {
+      // Find if payment ledger already exists for this quotation or client
+      let payment = await this.paymentModel.findOne({ quotation: quotation._id });
+      if (!payment && quotation.client) {
+        payment = await this.paymentModel.findOne({ client: quotation.client, quotation: { $exists: false } });
+      }
+
+      if (payment) {
+        // Update invoice amount & recalculate pending
+        payment.invoiceAmount = quotation.totalAmount;
+        payment.pendingAmount = Math.max(0, quotation.totalAmount - (payment.receivedAmount || 0));
+        if (payment.receivedAmount >= quotation.totalAmount && quotation.totalAmount > 0) {
+          payment.status = 'paid';
+        } else if (payment.receivedAmount > 0) {
+          payment.status = 'partial';
+        } else {
+          payment.status = 'pending';
+        }
+        payment.quotation = quotation._id as any;
+        if (quotation.client) payment.client = quotation.client;
+        if (quotation.lead) (payment as any).lead = quotation.lead;
+        await payment.save();
+      } else {
+        // Create new auto-linked Payment receipt ledger
+        const year = new Date().getFullYear();
+        const lastDoc = await this.paymentModel
+          .findOne({ paymentNo: { $regex: new RegExp(`^PAY-${year}-\\d+$`) } })
+          .sort({ paymentNo: -1, createdAt: -1 });
+
+        let nextNum = 1;
+        if (lastDoc && lastDoc.paymentNo) {
+          const match = lastDoc.paymentNo.match(/PAY-\d+-(\d+)/);
+          if (match) nextNum = parseInt(match[1], 10) + 1;
+        }
+        while (await this.paymentModel.findOne({ paymentNo: `PAY-${year}-${String(nextNum).padStart(4, '0')}` })) {
+          nextNum++;
+        }
+        const paymentNo = `PAY-${year}-${String(nextNum).padStart(4, '0')}`;
+
+        const newPayment = new this.paymentModel({
+          paymentNo,
+          client: quotation.client || undefined,
+          lead: quotation.lead || undefined,
+          quotation: quotation._id,
+          invoiceAmount: quotation.totalAmount,
+          receivedAmount: 0,
+          pendingAmount: quotation.totalAmount,
+          status: 'pending',
+          paymentMethod: 'bank_transfer',
+          notes: `Automated payment invoice created from Quotation ${quotation.quotationNo}`,
+          createdBy: userId ? new Types.ObjectId(userId) : quotation.createdBy,
+        });
+
+        await newPayment.save();
+      }
+    } catch (err) {
+      console.error('Error syncing quotation payment:', err);
+    }
+  }
+
   async create(dto: any, userId: string): Promise<QuotationDocument> {
     const quotationNo = await this.generateQuotationNo();
     const payload: any = {
@@ -44,13 +109,18 @@ export class QuotationsService {
     if (dto.client) payload.client = new Types.ObjectId(dto.client);
 
     const quotation = new this.quotationModel(payload);
-    return quotation.save();
+    const saved = await quotation.save();
+
+    // Auto-sync into Payments collection
+    await this.syncQuotationPayment(saved, userId);
+
+    return saved;
   }
 
   async findAll(query: any): Promise<{ quotations: QuotationDocument[]; total: number }> {
     const { status, lead, client, page = 1, limit = 20 } = query;
     const filter: any = {};
-    if (status) filter.status = status;
+    if (status && status !== 'all') filter.status = status;
     if (lead) filter.lead = new Types.ObjectId(lead);
     if (client) filter.client = new Types.ObjectId(client);
 
@@ -89,6 +159,7 @@ export class QuotationsService {
     if (dto.validUntil) q.validUntil = new Date(dto.validUntil);
     if (dto.notes !== undefined) q.notes = dto.notes;
     if (dto.status) q.status = dto.status;
+    if (dto.templateType) q.templateType = dto.templateType;
     if (dto.lead) q.lead = new Types.ObjectId(dto.lead);
     if (dto.client) q.client = new Types.ObjectId(dto.client);
 
@@ -99,7 +170,12 @@ export class QuotationsService {
       q.totalAmount = Math.max(0, q.subtotal - q.discount + q.taxAmount);
     }
 
-    return q.save();
+    const updated = await q.save();
+
+    // Auto-update price in Payments collection
+    await this.syncQuotationPayment(updated);
+
+    return updated;
   }
 
   async updateStatus(id: string, status: string): Promise<QuotationDocument> {
@@ -120,6 +196,8 @@ export class QuotationsService {
     const sent = await this.mailService.sendQuotationEmail(recipient, recipientName, quotation);
     if (sent) {
       await this.quotationModel.findByIdAndUpdate(id, { status: 'sent', sentAt: new Date() });
+      // Ensure payment is synced
+      await this.syncQuotationPayment(quotation);
       return { success: true, message: `Quotation ${quotation.quotationNo} successfully sent to ${recipient}` };
     } else {
       throw new BadRequestException(`Failed to dispatch email to ${recipient}. Please check SMTP/Email configuration.`);

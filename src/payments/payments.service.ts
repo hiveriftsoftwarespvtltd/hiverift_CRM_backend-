@@ -67,6 +67,8 @@ export class PaymentsService {
       this.paymentModel
         .find(filter)
         .populate('client', 'name company email phone')
+        .populate('lead', 'name company email phone')
+        .populate('quotation', 'quotationNo totalAmount services')
         .populate('project', 'name projectId')
         .populate('createdBy', 'name')
         .skip(skip)
@@ -81,6 +83,8 @@ export class PaymentsService {
     const p = await this.paymentModel
       .findById(id)
       .populate('client', 'name company email phone address gstin')
+      .populate('lead', 'name company email phone address')
+      .populate('quotation', 'quotationNo totalAmount services')
       .populate('project', 'name projectId')
       .populate('createdBy', 'name email');
     if (!p) throw new NotFoundException('Payment record not found');

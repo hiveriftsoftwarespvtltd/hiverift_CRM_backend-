@@ -8,8 +8,14 @@ export class Payment {
   @Prop({ unique: true })
   paymentNo: string;
 
-  @Prop({ type: Types.ObjectId, ref: 'Client', required: true })
+  @Prop({ type: Types.ObjectId, ref: 'Client' })
   client: Types.ObjectId;
+
+  @Prop({ type: Types.ObjectId, ref: 'Lead' })
+  lead: Types.ObjectId;
+
+  @Prop({ type: Types.ObjectId, ref: 'Quotation' })
+  quotation: Types.ObjectId;
 
   @Prop({ type: Types.ObjectId, ref: 'Project' })
   project: Types.ObjectId;
