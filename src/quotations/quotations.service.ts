@@ -80,9 +80,26 @@ export class QuotationsService {
   }
 
   async update(id: string, dto: any): Promise<QuotationDocument> {
-    const q = await this.quotationModel.findByIdAndUpdate(id, dto, { new: true });
+    const q = await this.quotationModel.findById(id);
     if (!q) throw new NotFoundException('Quotation not found');
-    return q;
+
+    if (dto.services) q.services = dto.services;
+    if (dto.discount !== undefined) q.discount = Number(dto.discount) || 0;
+    if (dto.taxPercent !== undefined) q.taxPercent = Number(dto.taxPercent) || 0;
+    if (dto.validUntil) q.validUntil = new Date(dto.validUntil);
+    if (dto.notes !== undefined) q.notes = dto.notes;
+    if (dto.status) q.status = dto.status;
+    if (dto.lead) q.lead = new Types.ObjectId(dto.lead);
+    if (dto.client) q.client = new Types.ObjectId(dto.client);
+
+    // Calculate totals
+    if (q.services?.length) {
+      q.subtotal = q.services.reduce((s, svc) => s + (Number(svc.amount) || ((Number(svc.quantity) || 1) * (Number(svc.rate) || 0))), 0);
+      q.taxAmount = Math.max(0, ((q.subtotal - q.discount) * q.taxPercent) / 100);
+      q.totalAmount = Math.max(0, q.subtotal - q.discount + q.taxAmount);
+    }
+
+    return q.save();
   }
 
   async updateStatus(id: string, status: string): Promise<QuotationDocument> {
