@@ -3,15 +3,30 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Attendance, AttendanceDocument } from './schemas/attendance.schema';
 
+/**
+ * Returns minutes from midnight in India Standard Time (Asia/Kolkata)
+ */
+function getISTMinutes(date: Date): number {
+  try {
+    const istString = date.toLocaleString('en-US', { timeZone: 'Asia/Kolkata' });
+    const istDate = new Date(istString);
+    return istDate.getHours() * 60 + istDate.getMinutes();
+  } catch {
+    // Fallback: UTC + 5:30 (330 minutes)
+    const utcMinutes = date.getUTCHours() * 60 + date.getUTCMinutes();
+    return (utcMinutes + 330) % 1440;
+  }
+}
+
 @Injectable()
 export class AttendanceService {
   constructor(@InjectModel(Attendance.name) private attendanceModel: Model<AttendanceDocument>) {}
 
   /**
    * Check In:
-   * - Office Timing: 10:00 AM to 07:00 PM
-   * - On-Time cutoff: 10:00 AM
-   * - Half-Day cutoff: 01:00 PM
+   * - Office Timing: 10:00 AM to 07:00 PM (IST)
+   * - On-Time cutoff: 10:00 AM IST (600 mins)
+   * - Half-Day cutoff: 01:00 PM IST (780 mins)
    * - Rule: 1 Check-In per day. Once checked out, next check-in is only allowed next day.
    */
   async checkIn(userId: string, notes?: string): Promise<AttendanceDocument> {
@@ -27,19 +42,14 @@ export class AttendanceService {
     }
 
     const checkInTime = new Date();
-
-    // 10:00 AM Shift Start
-    const tenAM = new Date();
-    tenAM.setHours(10, 0, 0, 0);
-
-    // 01:00 PM Half-Day cutoff
-    const onePM = new Date();
-    onePM.setHours(13, 0, 0, 0);
+    const istMinutes = getISTMinutes(checkInTime);
+    const tenAMMinutes = 10 * 60; // 10:00 AM (600 mins)
+    const onePMMinutes = 13 * 60; // 01:00 PM (780 mins)
 
     let status = 'present';
-    if (checkInTime > onePM) {
+    if (istMinutes > onePMMinutes) {
       status = 'half_day';
-    } else if (checkInTime > tenAM) {
+    } else if (istMinutes > tenAMMinutes) {
       status = 'late';
     }
 
@@ -135,21 +145,26 @@ export class AttendanceService {
       this.attendanceModel.countDocuments(filter),
     ]);
 
-    // Enhance with Late calculation and live hours
+    // Enhance with Late calculation (10:00 AM IST cutoff) and live hours
     const attendances = rawAttendances.map(a => {
       const obj: any = a.toObject();
       if (obj.checkIn) {
         const checkInDate = new Date(obj.checkIn);
-        const shiftStart = new Date(checkInDate);
-        shiftStart.setHours(10, 0, 0, 0);
+        const istMinutes = getISTMinutes(checkInDate);
+        const shiftStartMinutes = 10 * 60; // 10:00 AM IST (600 mins)
 
-        if (checkInDate > shiftStart) {
-          const diffMinutes = Math.floor((checkInDate.getTime() - shiftStart.getTime()) / (1000 * 60));
+        if (istMinutes > shiftStartMinutes) {
+          const diffMinutes = istMinutes - shiftStartMinutes;
           const hours = Math.floor(diffMinutes / 60);
           const mins = diffMinutes % 60;
           obj.lateDuration = hours > 0 ? `${hours}h ${mins}m late` : `${mins}m late`;
           obj.isLate = true;
+          // Auto-fix status if it was erroneously set to present
+          if (obj.status === 'present') {
+            obj.status = istMinutes >= (13 * 60) ? 'half_day' : 'late';
+          }
         } else {
+          obj.lateDuration = 'On Time';
           obj.isLate = false;
         }
 
