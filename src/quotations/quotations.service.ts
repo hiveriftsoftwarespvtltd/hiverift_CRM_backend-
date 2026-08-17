@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Quotation, QuotationDocument } from './schemas/quotation.schema';
@@ -97,15 +97,15 @@ export class QuotationsService {
     const recipientName = (quotation.lead as any)?.name || (quotation.client as any)?.name || 'Valued Client';
 
     if (!recipient) {
-      throw new NotFoundException('No email found for this lead/client');
+      throw new NotFoundException('No email address registered for this Lead or Client profile');
     }
 
     const sent = await this.mailService.sendQuotationEmail(recipient, recipientName, quotation);
     if (sent) {
       await this.quotationModel.findByIdAndUpdate(id, { status: 'sent', sentAt: new Date() });
-      return { success: true, message: `Quotation sent to ${recipient}` };
+      return { success: true, message: `Quotation ${quotation.quotationNo} successfully sent to ${recipient}` };
     } else {
-      return { success: false, message: `Failed to send email to ${recipient}` };
+      throw new BadRequestException(`Failed to dispatch email to ${recipient}. Please check SMTP/Email configuration.`);
     }
   }
 

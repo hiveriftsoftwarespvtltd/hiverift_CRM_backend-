@@ -38,6 +38,18 @@ export class QuotationsController {
     return { message: 'Quotation status updated', data: q };
   }
 
+  @Post(':id/send-email')
+  async sendEmail(@Param('id') id: string) {
+    const result = await this.quotationsService.sendEmail(id);
+    return { message: result.message, data: result };
+  }
+
+  @Post(':id/send')
+  async send(@Param('id') id: string) {
+    const result = await this.quotationsService.sendEmail(id);
+    return { message: result.message, data: result };
+  }
+
   @Delete(':id')
   async remove(@Param('id') id: string) {
     await this.quotationsService.remove(id);
