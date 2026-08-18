@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Payment, PaymentDocument } from './schemas/payment.schema';
@@ -56,21 +56,47 @@ export class PaymentsService {
     return payment.save();
   }
 
-  async findAll(query: any): Promise<{ payments: PaymentDocument[]; total: number }> {
-    const { status, client, project, page = 1, limit = 50 } = query;
+  async findAll(query: any, user?: any): Promise<{ payments: PaymentDocument[]; total: number }> {
+    const { status, client, project, page = 1, limit = 50, search } = query;
     const filter: any = {};
     if (status && status !== 'all') filter.status = status;
     if (client) filter.client = new Types.ObjectId(client);
     if (project) filter.project = new Types.ObjectId(project);
+
+    // Sales role isolation:
+    // Only Super Admin and Management see ALL company-wide payments.
+    // Sales users see ONLY payments created by themselves (or linked to their own quotations).
+    if (user && user.role === 'sales') {
+      const uId = user._id ? user._id.toString() : user.id;
+      filter.createdBy = new Types.ObjectId(uId);
+    }
+
+    if (search) {
+      const searchRegex = { $regex: search, $options: 'i' };
+      const searchConditions = [
+        { paymentNo: searchRegex },
+        { reference: searchRegex },
+      ];
+      if (filter.createdBy) {
+        filter.$and = [
+          { createdBy: filter.createdBy },
+          { $or: searchConditions }
+        ];
+        delete filter.createdBy;
+      } else {
+        filter.$or = searchConditions;
+      }
+    }
+
     const skip = (Number(page) - 1) * Number(limit);
     const [payments, total] = await Promise.all([
       this.paymentModel
         .find(filter)
         .populate('client', 'name company email phone')
         .populate('lead', 'name company email phone')
-        .populate('quotation', 'quotationNo totalAmount services')
+        .populate('quotation', 'quotationNo totalAmount services createdBy')
         .populate('project', 'name projectId')
-        .populate('createdBy', 'name')
+        .populate('createdBy', 'name email role')
         .skip(skip)
         .limit(Number(limit))
         .sort({ createdAt: -1 }),
@@ -79,21 +105,28 @@ export class PaymentsService {
     return { payments, total };
   }
 
-  async findOne(id: string): Promise<PaymentDocument> {
+  async findOne(id: string, user?: any): Promise<PaymentDocument> {
     const p = await this.paymentModel
       .findById(id)
       .populate('client', 'name company email phone address gstin')
       .populate('lead', 'name company email phone address')
-      .populate('quotation', 'quotationNo totalAmount services')
+      .populate('quotation', 'quotationNo totalAmount services createdBy')
       .populate('project', 'name projectId')
-      .populate('createdBy', 'name email');
+      .populate('createdBy', 'name email role');
     if (!p) throw new NotFoundException('Payment record not found');
+
+    if (user && user.role === 'sales') {
+      const uId = user._id ? user._id.toString() : user.id;
+      const creatorId = (p.createdBy as any)?._id ? (p.createdBy as any)._id.toString() : (p.createdBy as any)?.toString();
+      if (creatorId && creatorId !== uId) {
+        throw new ForbiddenException('You do not have permission to view this payment record');
+      }
+    }
     return p;
   }
 
-  async update(id: string, dto: any): Promise<PaymentDocument> {
-    const existing = await this.paymentModel.findById(id);
-    if (!existing) throw new NotFoundException('Payment record not found');
+  async update(id: string, dto: any, user?: any): Promise<PaymentDocument> {
+    const existing = await this.findOne(id, user);
 
     const invoiceAmount = dto.invoiceAmount !== undefined ? Number(dto.invoiceAmount) : existing.invoiceAmount;
     const receivedAmount = dto.receivedAmount !== undefined ? Number(dto.receivedAmount) : existing.receivedAmount;
@@ -121,17 +154,25 @@ export class PaymentsService {
     return updated;
   }
 
-  async remove(id: string): Promise<void> {
+  async remove(id: string, user?: any): Promise<void> {
+    await this.findOne(id, user);
     const result = await this.paymentModel.findByIdAndDelete(id);
     if (!result) throw new NotFoundException('Payment record not found');
   }
 
-  async delete(id: string): Promise<void> {
-    return this.remove(id);
+  async delete(id: string, user?: any): Promise<void> {
+    return this.remove(id, user);
   }
 
-  async getSummary(): Promise<any> {
+  async getSummary(user?: any): Promise<any> {
+    const match: any = {};
+    if (user && user.role === 'sales') {
+      const uId = user._id ? user._id.toString() : user.id;
+      match.createdBy = new Types.ObjectId(uId);
+    }
+
     const result = await this.paymentModel.aggregate([
+      { $match: match },
       {
         $group: {
           _id: null,
@@ -145,3 +186,4 @@ export class PaymentsService {
     return result[0] || { totalInvoiced: 0, totalReceived: 0, totalPending: 0, count: 0 };
   }
 }
+

@@ -22,6 +22,18 @@ export class AttendanceController {
     return { message: 'Checked out successfully', data: att };
   }
 
+  @Post('start-break')
+  async startBreak(@CurrentUser() user: any, @Body() body: { type: string }) {
+    const att = await this.attendanceService.startBreak(user._id.toString(), body.type);
+    return { message: `Started ${body.type || 'break'}`, data: att };
+  }
+
+  @Post('end-break')
+  async endBreak(@CurrentUser() user: any) {
+    const att = await this.attendanceService.endBreak(user._id.toString());
+    return { message: 'Break ended and work resumed', data: att };
+  }
+
   @Post('reset-today')
   @Delete('reset-today')
   async resetTodayAttendance(@CurrentUser() user: any) {

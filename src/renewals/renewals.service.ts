@@ -28,10 +28,25 @@ export class RenewalsService {
     await this.syncStatuses();
     const skip = (Number(page) - 1) * Number(limit);
     const [renewals, total] = await Promise.all([
-      this.renewalModel.find(filter).populate('client', 'name company').populate('assignedSales', 'name').skip(skip).limit(Number(limit)).sort({ expiryDate: 1 }),
+      this.renewalModel
+        .find(filter)
+        .populate('client', 'name company email phone')
+        .populate('assignedSales', 'name')
+        .skip(skip)
+        .limit(Number(limit))
+        .sort({ expiryDate: 1 }),
       this.renewalModel.countDocuments(filter),
     ]);
     return { renewals, total };
+  }
+
+  async findOne(id: string): Promise<RenewalDocument> {
+    const renewal = await this.renewalModel
+      .findById(id)
+      .populate('client', 'name company email phone')
+      .populate('assignedSales', 'name');
+    if (!renewal) throw new NotFoundException('Renewal not found');
+    return renewal;
   }
 
   async getDashboard(): Promise<any> {
@@ -72,6 +87,12 @@ export class RenewalsService {
     if (dto.project) payload.project = new Types.ObjectId(dto.project);
     if (dto.assignedSales) payload.assignedSales = new Types.ObjectId(dto.assignedSales);
     const renewal = await this.renewalModel.findByIdAndUpdate(id, payload, { new: true });
+    if (!renewal) throw new NotFoundException('Renewal not found');
+    return renewal;
+  }
+
+  async delete(id: string): Promise<RenewalDocument> {
+    const renewal = await this.renewalModel.findByIdAndDelete(id);
     if (!renewal) throw new NotFoundException('Renewal not found');
     return renewal;
   }

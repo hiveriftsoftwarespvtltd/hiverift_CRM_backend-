@@ -25,7 +25,7 @@ export class DashboardService {
     @InjectModel(AuditLog.name) private auditLogModel: Model<AuditLogDocument>,
     @InjectModel(Task.name) private taskModel: Model<TaskDocument>,
     @InjectModel(Quotation.name) private quotationModel: Model<QuotationDocument>,
-  ) {}
+  ) { }
 
   private async get7DaysSalesTrend(userFilter?: any) {
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -73,24 +73,107 @@ export class DashboardService {
 
   private async calculatePipelineFunnel(userFilter?: any) {
     const filter = userFilter || {};
-    const [total, contacted, interested, requirement, quotation, won, lost] = await Promise.all([
+
+    let quoFilter: any = {};
+    let payFilter: any = {};
+    if (userFilter) {
+      const leads = await this.leadModel.find(userFilter).select('_id');
+      const leadIds = leads.map((l) => l._id);
+      const uId = userFilter.assignedTo || userFilter.$or?.[0]?.assignedTo;
+      if (uId) {
+        quoFilter = {
+          $or: [
+            { createdBy: uId },
+            { lead: { $in: leadIds } },
+          ],
+        };
+        payFilter = {
+          $or: [
+            { createdBy: uId },
+            { lead: { $in: leadIds } },
+          ],
+        };
+      } else {
+        quoFilter = { lead: { $in: leadIds } };
+        payFilter = { lead: { $in: leadIds } };
+      }
+    }
+
+    const [
+      totalLeads,
+      contactedLeads,
+      leadQuotations,
+      wonLeads,
+      lostLeads,
+      totalQuoDocs,
+      approvedQuoDocs,
+      droppedQuoDocs,
+      payAgg,
+    ] = await Promise.all([
       this.leadModel.countDocuments(filter),
       this.leadModel.countDocuments({ ...filter, status: { $in: ['contacted', 'interested', 'requirement', 'quotation', 'negotiation', 'won'] } }),
-      this.leadModel.countDocuments({ ...filter, status: { $in: ['interested', 'requirement', 'quotation', 'negotiation', 'won'] } }),
-      this.leadModel.countDocuments({ ...filter, status: { $in: ['requirement', 'quotation', 'negotiation', 'won'] } }),
       this.leadModel.countDocuments({ ...filter, status: { $in: ['quotation', 'negotiation', 'won'] } }),
       this.leadModel.countDocuments({ ...filter, status: 'won' }),
       this.leadModel.countDocuments({ ...filter, status: 'lost' }),
+      this.quotationModel.countDocuments(quoFilter),
+      this.quotationModel.countDocuments({ ...quoFilter, status: 'accepted' }),
+      this.quotationModel.countDocuments({ ...quoFilter, status: { $in: ['rejected', 'expired'] } }),
+      this.paymentModel.aggregate([
+        { $match: payFilter },
+        {
+          $group: {
+            _id: null,
+            totalInvoiced: { $sum: '$invoiceAmount' },
+            totalReceived: { $sum: '$receivedAmount' },
+            totalPending: { $sum: '$pendingAmount' },
+            count: { $sum: 1 },
+          },
+        },
+      ]),
     ]);
 
-    const base = total > 0 ? total : 1;
-    return [
-      { name: 'Total Leads', count: total, value: 100, fill: '#E0F2FE' },
-      { name: 'Contacted', count: contacted, value: Math.round((contacted / base) * 100), fill: '#BAE6FD' },
-      { name: 'Interested', count: interested, value: Math.round((interested / base) * 100), fill: '#7DD3FC' },
-      { name: 'Quotation', count: quotation, value: Math.round((quotation / base) * 100), fill: '#38BDF8' },
-      { name: 'Won Deals', count: won, value: Math.round((won / base) * 100), fill: '#016139' },
+    const quoSent = Math.max(totalQuoDocs, leadQuotations);
+    const quoApproved = Math.max(approvedQuoDocs, wonLeads);
+    const quoDropped = Math.max(droppedQuoDocs, lostLeads);
+
+    const base = totalLeads > 0 ? totalLeads : (quoSent > 0 ? quoSent : 1);
+
+    const totalInvoiced = payAgg[0]?.totalInvoiced || 0;
+    const totalReceived = payAgg[0]?.totalReceived || 0;
+    const totalPending = payAgg[0]?.totalPending || 0;
+
+    let receivedPercent = 0;
+    let pendingPercent = 0;
+    if (totalInvoiced > 0) {
+      receivedPercent = Math.round((totalReceived / totalInvoiced) * 100);
+      if (totalPending > 0) {
+        pendingPercent = Math.max(1, Math.round((totalPending / totalInvoiced) * 100));
+        if (receivedPercent + pendingPercent > 100) {
+          receivedPercent = Math.max(0, 100 - pendingPercent);
+        }
+      }
+    } else if (totalReceived > 0) {
+      receivedPercent = 100;
+      pendingPercent = 0;
+    }
+
+    const fmtMoney = (n: number) => {
+      if (n >= 10000000) return `₹${(n / 10000000).toFixed(2).replace(/\.00$/, '')} Cr`;
+      if (n >= 100000) return `₹${(n / 100000).toFixed(2).replace(/\.00$/, '')} L`;
+      return `₹${n.toLocaleString('en-IN')}`;
+    };
+
+    const list: Array<{ name: string; count: string | number; value: number; fill: string; textColor?: string }> = [
+      { name: 'Total Leads', count: totalLeads, value: 100, fill: '#2563EB', textColor: '#FFFFFF' },
+      { name: 'Contacted', count: contactedLeads, value: Math.round((contactedLeads / base) * 100), fill: '#0284C7', textColor: '#FFFFFF' },
+      { name: 'Quotations Sent', count: quoSent, value: Math.round((quoSent / base) * 100), fill: '#6366F1', textColor: '#FFFFFF' },
+      { name: 'Quotations Approved', count: quoApproved, value: Math.round((quoApproved / base) * 100), fill: '#016139', textColor: '#FFFFFF' },
+      { name: 'Quotations Dropped', count: quoDropped, value: Math.round((quoDropped / base) * 100), fill: '#EF4444', textColor: '#FFFFFF' },
+      { name: 'Payment Received', count: fmtMoney(totalReceived), value: receivedPercent, fill: '#10B981', textColor: '#FFFFFF' },
+      { name: 'Pending Balance', count: fmtMoney(totalPending), value: pendingPercent, fill: '#F59E0B', textColor: '#FFFFFF' },
     ];
+
+    return list;
   }
 
   // ================= ADMIN / SUPER ADMIN DASHBOARD =================
@@ -169,13 +252,51 @@ export class DashboardService {
     const presentCount = todayAttendanceAgg.reduce((acc, curr) => (curr._id !== 'absent' ? acc + curr.count : acc), 0);
     const lateCount = todayAttendanceAgg.find((a) => a._id === 'late')?.count || 0;
     const onTimeCount = todayAttendanceAgg.find((a) => a._id === 'present')?.count || 0;
+    const wonCount = leadsByStatus.find((s) => s._id === 'won')?.count || 0;
+    const lostCount = leadsByStatus.find((s) => s._id === 'lost')?.count || 0;
+
+    // Sales Team Individual Breakdown
+    const salesUsers = await this.userModel
+      .find({ role: { $in: ['sales', 'management'] }, isActive: true })
+      .select('_id name email role phone');
+
+    const salesPerformance = await Promise.all(
+      salesUsers.map(async (u) => {
+        const uId = u._id;
+        const [total, won, lost, quotations, wonValAgg] = await Promise.all([
+          this.leadModel.countDocuments({ assignedTo: uId }),
+          this.leadModel.countDocuments({ assignedTo: uId, status: 'won' }),
+          this.leadModel.countDocuments({ assignedTo: uId, status: 'lost' }),
+          this.quotationModel.countDocuments({ createdBy: uId }),
+          this.leadModel.aggregate([
+            { $match: { assignedTo: uId, status: 'won' } },
+            { $group: { _id: null, total: { $sum: '$estimatedValue' } } },
+          ]),
+        ]);
+        return {
+          _id: u._id,
+          name: u.name,
+          email: u.email,
+          role: u.role,
+          phone: u.phone,
+          totalLeads: total,
+          wonLeads: won,
+          lostLeads: lost,
+          quotationsSent: quotations,
+          wonValue: wonValAgg[0]?.total || 0,
+          conversionRate: total > 0 ? Math.round((won / total) * 100) : 0,
+        };
+      }),
+    );
 
     return {
       leads: {
         total: totalLeads,
         newToday: newLeadsToday,
+        wonCount,
+        lostCount,
         byStatus: leadsByStatus,
-        conversionRate: totalLeads > 0 ? Math.round(((leadsByStatus.find((s) => s._id === 'won')?.count || 0) / totalLeads) * 100) : 0,
+        conversionRate: totalLeads > 0 ? Math.round((wonCount / totalLeads) * 100) : 0,
       },
       projects: {
         active: activeProjects,
@@ -202,6 +323,7 @@ export class DashboardService {
         absentToday: Math.max(0, totalEmployees - presentCount),
         pendingLeaves: pendingLeavesCount,
       },
+      salesPerformance,
       followupsToday: followupsTodayList,
       salesTrend,
       pipelineFunnel,
@@ -226,6 +348,7 @@ export class DashboardService {
       myOverdueFollowups,
       myQuotations,
       myWonLeads,
+      myLostLeads,
       renewalsDue,
       followupsTodayList,
       myLeadsByStatus,
@@ -239,6 +362,7 @@ export class DashboardService {
       this.leadModel.countDocuments({ ...matchFilter, nextFollowup: { $lt: today }, status: { $nin: ['won', 'lost'] } }),
       this.quotationModel.countDocuments({ createdBy: userObjId }),
       this.leadModel.countDocuments({ ...matchFilter, status: 'won' }),
+      this.leadModel.countDocuments({ ...matchFilter, status: 'lost' }),
       this.renewalModel.countDocuments({ ...renewalMatch, status: { $in: ['due_today', 'next_7_days'] } }),
       this.leadModel
         .find({ ...matchFilter, nextFollowup: { $gte: today, $lt: tomorrow } })
@@ -259,13 +383,16 @@ export class DashboardService {
     const wonSalesValue = wonDealsAgg[0]?.total || 0;
 
     return {
+      totalLeads: myLeads,
       newLeads: myLeadsToday,
       myLeads,
+      wonLeadsCount: myWonLeads,
+      lostLeadsCount: myLostLeads,
+      conversionRate: myLeads > 0 ? Math.round((myWonLeads / myLeads) * 100) : 0,
       followupsToday: followupsTodayList,
       followupsCount: myFollowupsCount,
       overdueFollowups: myOverdueFollowups,
       pendingQuotations: myQuotations,
-      wonLeadsCount: myWonLeads,
       wonSalesValue,
       renewalsDue,
       myLeadsByStatus,

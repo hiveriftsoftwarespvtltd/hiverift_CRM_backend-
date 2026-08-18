@@ -91,8 +91,20 @@ export class UsersService {
 
   async update(id: string, updateUserDto: UpdateUserDto): Promise<UserDocument> {
     const payload: any = { ...updateUserDto };
-    if (payload.password) {
-      payload.password = await bcrypt.hash(payload.password, 12);
+    if (payload.email) {
+      payload.email = payload.email.toLowerCase().trim();
+      const existing = await this.userModel.findOne({
+        email: payload.email,
+        _id: { $ne: new Types.ObjectId(id) }
+      });
+      if (existing) {
+        throw new BadRequestException('Another user already exists with this email');
+      }
+    }
+    if (payload.password && typeof payload.password === 'string' && payload.password.trim().length >= 6) {
+      payload.password = await bcrypt.hash(payload.password.trim(), 12);
+    } else {
+      delete payload.password;
     }
     if (payload.reportingTo && Types.ObjectId.isValid(payload.reportingTo)) {
       payload.reportingTo = new Types.ObjectId(payload.reportingTo);
@@ -105,6 +117,16 @@ export class UsersService {
       .select('-password -refreshToken');
     if (!user) throw new NotFoundException('User not found');
     return user;
+  }
+
+  async resetPassword(id: string, newPass: string): Promise<{ success: boolean; message: string }> {
+    if (!newPass || typeof newPass !== 'string' || newPass.trim().length < 6) {
+      throw new BadRequestException('Password must be at least 6 characters');
+    }
+    const hashed = await bcrypt.hash(newPass.trim(), 12);
+    const user = await this.userModel.findByIdAndUpdate(id, { password: hashed }, { new: true });
+    if (!user) throw new NotFoundException('User not found');
+    return { success: true, message: `Password for ${user.name} (${user.email}) updated successfully` };
   }
 
   async remove(id: string): Promise<void> {

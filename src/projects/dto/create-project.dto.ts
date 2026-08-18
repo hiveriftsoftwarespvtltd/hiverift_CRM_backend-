@@ -40,4 +40,7 @@ export class CreateProjectDto {
   @ValidateIf((o) => !!o.leadRef)
   @IsString()
   leadRef?: string;
+
+  @IsOptional()
+  attachments?: any[];
 }

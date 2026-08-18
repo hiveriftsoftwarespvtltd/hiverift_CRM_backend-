@@ -15,44 +15,44 @@ export class QuotationsController {
     return { message: 'Quotation created', data: q };
   }
   @Get()
-  async findAll(@Query() query: any) {
-    const result = await this.quotationsService.findAll(query);
+  async findAll(@Query() query: any, @CurrentUser() user: any) {
+    const result = await this.quotationsService.findAll(query, user);
     return { message: 'Quotations fetched', data: result };
   }
 
   @Get(':id')
-  async findOne(@Param('id') id: string) {
-    const q = await this.quotationsService.findOne(id);
+  async findOne(@Param('id') id: string, @CurrentUser() user: any) {
+    const q = await this.quotationsService.findOne(id, user);
     return { message: 'Quotation fetched', data: q };
   }
 
   @Put(':id')
-  async update(@Param('id') id: string, @Body() dto: any) {
-    const q = await this.quotationsService.update(id, dto);
+  async update(@Param('id') id: string, @Body() dto: any, @CurrentUser() user: any) {
+    const q = await this.quotationsService.update(id, dto, user);
     return { message: 'Quotation updated', data: q };
   }
 
   @Put(':id/status')
-  async updateStatus(@Param('id') id: string, @Body() body: { status: string }) {
-    const q = await this.quotationsService.updateStatus(id, body.status);
+  async updateStatus(@Param('id') id: string, @Body() body: { status: string }, @CurrentUser() user: any) {
+    const q = await this.quotationsService.updateStatus(id, body.status, user);
     return { message: 'Quotation status updated', data: q };
   }
 
   @Post(':id/send-email')
-  async sendEmail(@Param('id') id: string) {
-    const result = await this.quotationsService.sendEmail(id);
+  async sendEmail(@Param('id') id: string, @CurrentUser() user: any) {
+    const result = await this.quotationsService.sendEmail(id, user);
     return { message: result.message, data: result };
   }
 
   @Post(':id/send')
-  async send(@Param('id') id: string) {
-    const result = await this.quotationsService.sendEmail(id);
+  async send(@Param('id') id: string, @CurrentUser() user: any) {
+    const result = await this.quotationsService.sendEmail(id, user);
     return { message: result.message, data: result };
   }
 
   @Delete(':id')
-  async remove(@Param('id') id: string) {
-    await this.quotationsService.remove(id);
+  async remove(@Param('id') id: string, @CurrentUser() user: any) {
+    await this.quotationsService.remove(id, user);
     return { message: 'Quotation deleted', data: null };
   }
 }

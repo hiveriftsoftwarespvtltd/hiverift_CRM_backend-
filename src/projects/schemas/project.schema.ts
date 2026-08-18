@@ -81,8 +81,8 @@ export class Project {
   @Prop()
   requirements: string;
 
-  @Prop({ type: [String], default: [] })
-  attachments: string[];
+  @Prop({ type: [Object], default: [] })
+  attachments: any[];
 
   @Prop({ type: [ProjectNoteSchema], default: [] })
   notes: ProjectNote[];

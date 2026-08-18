@@ -2,6 +2,8 @@ import { Injectable, NotFoundException, ConflictException } from '@nestjs/common
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Attendance, AttendanceDocument } from './schemas/attendance.schema';
+import { User, UserDocument } from '../users/schemas/user.schema';
+import { NotificationsService } from '../notifications/notifications.service';
 
 /**
  * Returns minutes from midnight in India Standard Time (Asia/Kolkata)
@@ -20,7 +22,11 @@ function getISTMinutes(date: Date): number {
 
 @Injectable()
 export class AttendanceService {
-  constructor(@InjectModel(Attendance.name) private attendanceModel: Model<AttendanceDocument>) {}
+  constructor(
+    @InjectModel(Attendance.name) private attendanceModel: Model<AttendanceDocument>,
+    @InjectModel(User.name) private userModel: Model<UserDocument>,
+    private readonly notificationsService: NotificationsService,
+  ) {}
 
   /**
    * Check In:
@@ -82,12 +88,141 @@ export class AttendanceService {
     attendance.checkOut = checkOut;
     attendance.workingHours = Math.round(workingHours * 100) / 100;
 
+    // Auto-end active break if on break during checkout
+    if (attendance.activeBreak && attendance.activeBreak.startTime) {
+      const durationMinutes = Math.max(1, Math.round((checkOut.getTime() - new Date(attendance.activeBreak.startTime).getTime()) / (1000 * 60)));
+      if (!attendance.breaks) attendance.breaks = [];
+      attendance.breaks.push({
+        type: attendance.activeBreak.type,
+        startTime: attendance.activeBreak.startTime,
+        endTime: checkOut,
+        durationMinutes,
+      });
+      attendance.totalBreakMinutes = attendance.breaks.reduce((sum, b) => sum + (b.durationMinutes || 0), 0);
+      attendance.activeBreak = undefined;
+    }
+
     // If worked less than 4.5 hours, mark as half-day
     if (attendance.workingHours < 4.5 && attendance.status === 'present') {
       attendance.status = 'half_day';
     }
 
     return attendance.save();
+  }
+
+  /**
+   * Start Break:
+   * Types: 'Tea Break' | 'Lunch Break' | 'Bio Break' | 'Training' | 'Huddle'
+   */
+  async startBreak(userId: string, breakType: string): Promise<AttendanceDocument> {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const attendance = await this.attendanceModel.findOne({ employee: new Types.ObjectId(userId), date: today });
+    if (!attendance) throw new NotFoundException('Please check-in first before taking a break');
+    if (attendance.checkOut) throw new ConflictException('Shift is already completed for today');
+    if (attendance.activeBreak && attendance.activeBreak.startTime) {
+      throw new ConflictException(`Already on ${attendance.activeBreak.type}. Please resume work first.`);
+    }
+
+    attendance.activeBreak = {
+      type: breakType || 'Tea Break',
+      startTime: new Date(),
+    };
+
+    const saved = await attendance.save();
+
+    // 🔔 Notify Super Admin, Management, and HR
+    try {
+      const employee = await this.userModel.findById(userId).select('name role department');
+      if (employee) {
+        const recipients = await this.userModel.find({
+          role: { $in: ['admin', 'management', 'hr'] },
+          _id: { $ne: new Types.ObjectId(userId) },
+        }).select('_id');
+
+        const deptOrRole = employee.department || (employee.role ? employee.role.toUpperCase() : 'Staff');
+        const timeStr = new Date().toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+
+        for (const recipient of recipients) {
+          await this.notificationsService.create({
+            userId: recipient._id.toString(),
+            title: `${employee.name} is on ${breakType}`,
+            message: `${employee.name} (${deptOrRole}) has taken a ${breakType} at ${timeStr}.`,
+            type: 'break',
+            module: 'attendance',
+            referenceId: saved._id.toString(),
+          });
+        }
+      }
+    } catch (notifErr) {
+      console.error('Error sending break start notification:', notifErr);
+    }
+
+    return saved;
+  }
+
+  /**
+   * End Break / Resume Work:
+   * Calculates duration in minutes and adds to breaks history & totalBreakMinutes
+   */
+  async endBreak(userId: string): Promise<AttendanceDocument> {
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+
+    const attendance = await this.attendanceModel.findOne({ employee: new Types.ObjectId(userId), date: today });
+    if (!attendance) throw new NotFoundException('No attendance record found for today');
+    if (!attendance.activeBreak || !attendance.activeBreak.startTime) {
+      throw new ConflictException('No active break found to end');
+    }
+
+    const now = new Date();
+    const durationMinutes = Math.max(1, Math.round((now.getTime() - new Date(attendance.activeBreak.startTime).getTime()) / (1000 * 60)));
+    const endedBreakType = attendance.activeBreak.type || 'Break';
+
+    if (!attendance.breaks) {
+      attendance.breaks = [];
+    }
+
+    attendance.breaks.push({
+      type: endedBreakType,
+      startTime: attendance.activeBreak.startTime,
+      endTime: now,
+      durationMinutes,
+    });
+
+    attendance.totalBreakMinutes = attendance.breaks.reduce((sum, b) => sum + (b.durationMinutes || 0), 0);
+    attendance.activeBreak = undefined;
+
+    const saved = await attendance.save();
+
+    // 🔔 Notify Super Admin, Management, and HR
+    try {
+      const employee = await this.userModel.findById(userId).select('name role department');
+      if (employee) {
+        const recipients = await this.userModel.find({
+          role: { $in: ['admin', 'management', 'hr'] },
+          _id: { $ne: new Types.ObjectId(userId) },
+        }).select('_id');
+
+        const deptOrRole = employee.department || (employee.role ? employee.role.toUpperCase() : 'Staff');
+
+        for (const recipient of recipients) {
+          await this.notificationsService.create({
+            userId: recipient._id.toString(),
+            title: `${employee.name} Resumed Work (${endedBreakType})`,
+            message: `${employee.name} (${deptOrRole}) ended ${endedBreakType} after ${durationMinutes} mins. Total break today: ${saved.totalBreakMinutes}m.`,
+            type: 'break',
+            module: 'attendance',
+            referenceId: saved._id.toString(),
+          });
+        }
+      }
+    } catch (notifErr) {
+      console.error('Error sending break end notification:', notifErr);
+    }
+
+    return saved;
   }
 
   async resetToday(userId: string): Promise<void> {

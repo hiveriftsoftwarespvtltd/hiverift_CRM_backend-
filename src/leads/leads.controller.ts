@@ -17,7 +17,7 @@ export class LeadsController {
   @Post()
   @Roles('admin', 'management', 'sales')
   async create(@Body() createLeadDto: CreateLeadDto, @CurrentUser() user: any) {
-    const lead = await this.leadsService.create(createLeadDto, user._id.toString());
+    const lead = await this.leadsService.create(createLeadDto, user._id.toString(), user);
     return { message: 'Lead created successfully', data: lead };
   }
 
@@ -48,14 +48,14 @@ export class LeadsController {
   @Put(':id')
   @Roles('admin', 'management', 'sales')
   async update(@Param('id') id: string, @Body() updateLeadDto: UpdateLeadDto, @CurrentUser() user: any) {
-    const lead = await this.leadsService.update(id, updateLeadDto);
+    const lead = await this.leadsService.update(id, updateLeadDto, user?._id?.toString(), user);
     return { message: 'Lead updated', data: lead };
   }
 
   @Put(':id/status')
   @Roles('admin', 'management', 'sales')
   async updateStatus(@Param('id') id: string, @Body() body: { status: LeadStatus }, @CurrentUser() user: any) {
-    const lead = await this.leadsService.updateStatus(id, body.status, user._id.toString());
+    const lead = await this.leadsService.updateStatus(id, body.status, undefined, user?._id?.toString());
     return { message: 'Lead status updated', data: lead };
   }
 

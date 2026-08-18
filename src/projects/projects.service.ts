@@ -132,6 +132,37 @@ export class ProjectsService {
     return project.save();
   }
 
+  async addAttachment(id: string, attachment: any, userId?: string): Promise<ProjectDocument> {
+    const project = await this.projectModel.findById(id);
+    if (!project) throw new NotFoundException('Project not found');
+
+    const attachmentObj = {
+      _id: new Types.ObjectId(),
+      name: attachment.name || 'Document.pdf',
+      url: attachment.url,
+      fileType: attachment.fileType || 'application/pdf',
+      size: attachment.size || 0,
+      uploadedBy: userId ? new Types.ObjectId(userId) : undefined,
+      uploadedAt: new Date(),
+    };
+
+    project.attachments = project.attachments || [];
+    project.attachments.push(attachmentObj);
+    await project.save();
+    return this.findOne(id);
+  }
+
+  async removeAttachment(id: string, attachmentIndex: number): Promise<ProjectDocument> {
+    const project = await this.projectModel.findById(id);
+    if (!project) throw new NotFoundException('Project not found');
+
+    if (project.attachments && project.attachments.length > attachmentIndex) {
+      project.attachments.splice(attachmentIndex, 1);
+      await project.save();
+    }
+    return this.findOne(id);
+  }
+
   async remove(id: string): Promise<void> {
     const project = await this.projectModel.findByIdAndDelete(id);
     if (!project) throw new NotFoundException('Project not found');

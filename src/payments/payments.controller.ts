@@ -17,33 +17,33 @@ export class PaymentsController {
   }
 
   @Get()
-  async findAll(@Query() query: any) {
-    const result = await this.paymentsService.findAll(query);
+  async findAll(@Query() query: any, @CurrentUser() user: any) {
+    const result = await this.paymentsService.findAll(query, user);
     return { message: 'Payments fetched', data: result };
   }
 
   @Get('summary')
-  async getSummary() {
-    const summary = await this.paymentsService.getSummary();
+  async getSummary(@CurrentUser() user: any) {
+    const summary = await this.paymentsService.getSummary(user);
     return { message: 'Payment summary', data: summary };
   }
 
   @Get(':id')
-  async findOne(@Param('id') id: string) {
-    const p = await this.paymentsService.findOne(id);
+  async findOne(@Param('id') id: string, @CurrentUser() user: any) {
+    const p = await this.paymentsService.findOne(id, user);
     return { message: 'Payment fetched', data: p };
   }
 
   @Put(':id')
-  async update(@Param('id') id: string, @Body() dto: any) {
-    const p = await this.paymentsService.update(id, dto);
+  async update(@Param('id') id: string, @Body() dto: any, @CurrentUser() user: any) {
+    const p = await this.paymentsService.update(id, dto, user);
     return { message: 'Payment updated', data: p };
   }
 
   @Delete(':id')
   @Roles('admin', 'management')
-  async remove(@Param('id') id: string) {
-    await this.paymentsService.remove(id);
+  async remove(@Param('id') id: string, @CurrentUser() user: any) {
+    await this.paymentsService.remove(id, user);
     return { message: 'Payment deleted', data: null };
   }
 }

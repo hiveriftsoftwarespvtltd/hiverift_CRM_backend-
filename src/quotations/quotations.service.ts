@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, BadRequestException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Quotation, QuotationDocument } from './schemas/quotation.schema';
@@ -117,12 +117,27 @@ export class QuotationsService {
     return saved;
   }
 
-  async findAll(query: any): Promise<{ quotations: QuotationDocument[]; total: number }> {
-    const { status, lead, client, page = 1, limit = 20 } = query;
+  async findAll(query: any, user?: any): Promise<{ quotations: QuotationDocument[]; total: number }> {
+    const { status, lead, client, page = 1, limit = 20, search } = query;
     const filter: any = {};
     if (status && status !== 'all') filter.status = status;
     if (lead) filter.lead = new Types.ObjectId(lead);
     if (client) filter.client = new Types.ObjectId(client);
+
+    // Sales role isolation:
+    // Sales users see ONLY their own created quotations.
+    // Admin & Management see ALL quotations created by anyone (Admin, Sales A, Sales B, etc.).
+    if (user && user.role === 'sales') {
+      const uId = user._id ? user._id.toString() : user.id;
+      filter.createdBy = new Types.ObjectId(uId);
+    }
+
+    if (search) {
+      filter.$or = [
+        { quotationNo: { $regex: search, $options: 'i' } },
+        { 'services.name': { $regex: search, $options: 'i' } },
+      ];
+    }
 
     const skip = (Number(page) - 1) * Number(limit);
     const [quotations, total] = await Promise.all([
@@ -130,7 +145,7 @@ export class QuotationsService {
         .find(filter)
         .populate('lead', 'name company email phone')
         .populate('client', 'name company email phone')
-        .populate('createdBy', 'name')
+        .populate('createdBy', 'name email role')
         .skip(skip)
         .limit(Number(limit))
         .sort({ createdAt: -1 }),
@@ -139,19 +154,26 @@ export class QuotationsService {
     return { quotations, total };
   }
 
-  async findOne(id: string): Promise<QuotationDocument> {
+  async findOne(id: string, user?: any): Promise<QuotationDocument> {
     const q = await this.quotationModel
       .findById(id)
       .populate('lead', 'name company email phone address city')
       .populate('client', 'name company email phone address city gstin')
-      .populate('createdBy', 'name email phone');
+      .populate('createdBy', 'name email phone role');
     if (!q) throw new NotFoundException('Quotation not found');
+
+    if (user && user.role === 'sales') {
+      const uId = user._id ? user._id.toString() : user.id;
+      const creatorId = (q.createdBy as any)?._id ? (q.createdBy as any)._id.toString() : (q.createdBy as any)?.toString();
+      if (creatorId && creatorId !== uId) {
+        throw new ForbiddenException('You do not have permission to view this quotation');
+      }
+    }
     return q;
   }
 
-  async update(id: string, dto: any): Promise<QuotationDocument> {
-    const q = await this.quotationModel.findById(id);
-    if (!q) throw new NotFoundException('Quotation not found');
+  async update(id: string, dto: any, user?: any): Promise<QuotationDocument> {
+    const q = await this.findOne(id, user);
 
     if (dto.services) q.services = dto.services;
     if (dto.discount !== undefined) q.discount = Number(dto.discount) || 0;
@@ -178,14 +200,15 @@ export class QuotationsService {
     return updated;
   }
 
-  async updateStatus(id: string, status: string): Promise<QuotationDocument> {
+  async updateStatus(id: string, status: string, user?: any): Promise<QuotationDocument> {
+    await this.findOne(id, user);
     const q = await this.quotationModel.findByIdAndUpdate(id, { status }, { new: true });
     if (!q) throw new NotFoundException('Quotation not found');
     return q;
   }
 
-  async sendEmail(id: string): Promise<{ success: boolean; message: string }> {
-    const quotation = await this.findOne(id);
+  async sendEmail(id: string, user?: any): Promise<{ success: boolean; message: string }> {
+    const quotation = await this.findOne(id, user);
     const recipient = (quotation.lead as any)?.email || (quotation.client as any)?.email;
     const recipientName = (quotation.lead as any)?.name || (quotation.client as any)?.name || 'Valued Client';
 
@@ -204,12 +227,14 @@ export class QuotationsService {
     }
   }
 
-  async remove(id: string): Promise<void> {
+  async remove(id: string, user?: any): Promise<void> {
+    await this.findOne(id, user);
     const q = await this.quotationModel.findByIdAndDelete(id);
     if (!q) throw new NotFoundException('Quotation not found');
   }
 
-  async delete(id: string): Promise<void> {
-    return this.remove(id);
+  async delete(id: string, user?: any): Promise<void> {
+    return this.remove(id, user);
   }
 }
+

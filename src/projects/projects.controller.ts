@@ -63,6 +63,18 @@ export class ProjectsController {
     return { message: 'Note added', data: project };
   }
 
+  @Post(':id/attachments')
+  async addAttachment(@Param('id') id: string, @Body() body: any, @CurrentUser() user: any) {
+    const project = await this.projectsService.addAttachment(id, body, user?._id?.toString());
+    return { message: 'Attachment added successfully', data: project };
+  }
+
+  @Delete(':id/attachments/:index')
+  async removeAttachment(@Param('id') id: string, @Param('index') index: string) {
+    const project = await this.projectsService.removeAttachment(id, parseInt(index, 10));
+    return { message: 'Attachment removed', data: project };
+  }
+
   @Delete(':id')
   @Roles('admin', 'management')
   async remove(@Param('id') id: string) {

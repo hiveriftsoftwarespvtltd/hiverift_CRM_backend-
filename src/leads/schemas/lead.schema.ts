@@ -93,6 +93,9 @@ export class Lead {
   @Prop({ trim: true })
   city: string;
 
+  @Prop({ trim: true })
+  address: string;
+
   @Prop()
   requirement: string;
 

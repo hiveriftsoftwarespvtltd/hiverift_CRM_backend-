@@ -37,6 +37,13 @@ export class UsersController {
     return { message: 'User updated successfully', data: user };
   }
 
+  @Put(':id/reset-password')
+  @Roles('admin', 'management', 'hr')
+  async resetPassword(@Param('id') id: string, @Body() body: { password: string }) {
+    const res = await this.usersService.resetPassword(id, body.password);
+    return res;
+  }
+
   @Delete(':id')
   @Roles('admin')
   async remove(@Param('id') id: string) {
