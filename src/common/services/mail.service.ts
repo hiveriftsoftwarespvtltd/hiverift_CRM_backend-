@@ -83,7 +83,7 @@ export class MailService {
                     <p style="margin: 4px 0; font-size: 14px; color: #374151;">New Password: <strong style="font-size: 15px; color: #016139; background: #ffffff; padding: 3px 8px; border-radius: 4px; border: 1px dashed #10b981;">${newPass}</strong></p>
                   </div>
                   <div style="text-align: center; margin: 22px 0;">
-                    <a href="${loginUrl || 'http://localhost:5173/login'}" style="background-color: #016139; color: #ffffff; padding: 11px 22px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block; font-size: 14px;">
+                    <a href="${loginUrl || process.env.FRONTEND_URL ? `${process.env.FRONTEND_URL}/login` : 'https://crm.hiverift.com/login'}" style="background-color: #016139; color: #ffffff; padding: 11px 22px; text-decoration: none; border-radius: 6px; font-weight: bold; display: inline-block; font-size: 14px;">
                       Login to HiveRift Portal →
                     </a>
                   </div>
