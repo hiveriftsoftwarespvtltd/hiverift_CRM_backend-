@@ -182,6 +182,17 @@ export class QuotationsService {
     if (dto.notes !== undefined) q.notes = dto.notes;
     if (dto.status) q.status = dto.status;
     if (dto.templateType) q.templateType = dto.templateType;
+    if (dto.headerTitle !== undefined) (q as any).headerTitle = dto.headerTitle;
+    if (dto.subTitle !== undefined) (q as any).subTitle = dto.subTitle;
+    if (dto.customClientHeading !== undefined) (q as any).customClientHeading = dto.customClientHeading;
+    if (dto.section1Title !== undefined) (q as any).section1Title = dto.section1Title;
+    if (dto.section2Title !== undefined) (q as any).section2Title = dto.section2Title;
+    if (dto.section3Title !== undefined) (q as any).section3Title = dto.section3Title;
+    if (dto.section4Title !== undefined) (q as any).section4Title = dto.section4Title;
+    if (dto.section5Title !== undefined) (q as any).section5Title = dto.section5Title;
+    if (dto.executiveSummary !== undefined) (q as any).executiveSummary = dto.executiveSummary;
+    if (dto.termsAndConditions !== undefined) (q as any).termsAndConditions = dto.termsAndConditions;
+    if (dto.footerQuote !== undefined) (q as any).footerQuote = dto.footerQuote;
     if (dto.lead) q.lead = new Types.ObjectId(dto.lead);
     if (dto.client) q.client = new Types.ObjectId(dto.client);
 

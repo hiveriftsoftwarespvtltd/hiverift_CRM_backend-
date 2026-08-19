@@ -64,7 +64,40 @@ export class Quotation {
   templateType: string;
 
   @Prop()
+  headerTitle: string;
+
+  @Prop()
+  subTitle: string;
+
+  @Prop()
+  customClientHeading: string;
+
+  @Prop()
+  section1Title: string;
+
+  @Prop()
+  section2Title: string;
+
+  @Prop()
+  section3Title: string;
+
+  @Prop()
+  section4Title: string;
+
+  @Prop()
+  section5Title: string;
+
+  @Prop()
+  executiveSummary: string;
+
+  @Prop()
   notes: string;
+
+  @Prop()
+  termsAndConditions: string;
+
+  @Prop()
+  footerQuote: string;
 
   @Prop({ type: Types.ObjectId, ref: 'User' })
   createdBy: Types.ObjectId;

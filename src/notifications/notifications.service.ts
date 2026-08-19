@@ -38,6 +38,18 @@ export class NotificationsService {
     await this.notificationModel.updateMany({ user: userObjId, isRead: false }, { isRead: true });
   }
 
+  async delete(id: string, userId: string, isAdmin: boolean = false): Promise<void> {
+    const query = isAdmin
+      ? { _id: new Types.ObjectId(id) }
+      : { _id: new Types.ObjectId(id), user: Types.ObjectId.isValid(userId) ? new Types.ObjectId(userId) : userId };
+    await this.notificationModel.findOneAndDelete(query);
+  }
+
+  async deleteAll(userId: string, isAdmin: boolean = false): Promise<void> {
+    const userObjId = Types.ObjectId.isValid(userId) ? new Types.ObjectId(userId) : userId;
+    await this.notificationModel.deleteMany({ user: userObjId });
+  }
+
   async notifyLeadAssigned(salesUserId: string, leadName: string, leadId: string): Promise<void> {
     await this.create({ userId: salesUserId, title: 'New Lead Assigned', message: `Lead "${leadName}" has been assigned to you.`, type: 'lead', module: 'leads', referenceId: leadId });
   }

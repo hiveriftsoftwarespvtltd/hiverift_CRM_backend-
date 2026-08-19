@@ -340,4 +340,165 @@ export class MailService {
 
     return this.sendMail(to, `${subjectPrefix} (${quotation.quotationNo}) – HiveRift`, html);
   }
+
+  async sendInvoiceMail(to: string, invoice: any, customSubject?: string, customMessage?: string): Promise<boolean> {
+    const currency = invoice.currency || '₹';
+    const itemsHtml = (invoice.items || [])
+      .map(
+        (item: any, idx: number) => `
+        <tr style="border-bottom: 1px solid #f1f5f9; background-color: ${idx % 2 === 0 ? '#ffffff' : '#f8fafc'};">
+          <td style="padding: 10px 12px; font-size: 13px; color: #1e293b; font-weight: 500;">${item.description}</td>
+          <td style="padding: 10px 12px; font-size: 13px; color: #475569; text-align: center;">${item.quantity}</td>
+          <td style="padding: 10px 12px; font-size: 13px; color: #475569; text-align: right;">${currency}${Number(item.rate || 0).toLocaleString()}</td>
+          <td style="padding: 10px 12px; font-size: 13px; color: #0f172a; font-weight: 700; text-align: right;">${currency}${Number(item.amount || 0).toLocaleString()}</td>
+        </tr>
+      `,
+      )
+      .join('');
+
+    const formattedDate = invoice.date ? new Date(invoice.date).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : '';
+    const formattedDueDate = invoice.dueDate ? new Date(invoice.dueDate).toLocaleDateString('en-IN', { day: 'numeric', month: 'short', year: 'numeric' }) : 'Due on Receipt';
+
+    const html = `
+      <!DOCTYPE html>
+      <html>
+      <head>
+        <meta charset="utf-8">
+        <style>
+          body { font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; background-color: #f1f5f9; margin: 0; padding: 20px; }
+          .invoice-card { max-width: 680px; margin: 0 auto; background: #ffffff; border-radius: 12px; overflow: hidden; box-shadow: 0 4px 24px rgba(0,0,0,0.08); border: 1px solid #e2e8f0; }
+          .header { background: #0f172a; padding: 24px 30px; color: #ffffff; display: flex; justify-content: space-between; align-items: center; }
+          .content { padding: 30px; }
+          .table-header { background: #0f172a; color: #ffffff; font-size: 12px; font-weight: 700; text-transform: uppercase; }
+        </style>
+      </head>
+      <body>
+        <div class="invoice-card">
+          <div style="background: #ffffff; padding: 24px 30px; border-bottom: 2px solid #e2e8f0;">
+            <table style="width: 100%;">
+              <tr>
+                <td style="vertical-align: middle;">
+                  <img
+                    src="${invoice.logo || 'https://hiverift.com/logo.png'}"
+                    alt="HiveRift Logo"
+                    style="max-height: 55px; max-width: 180px; object-fit: contain; display: block;"
+                  />
+                </td>
+                <td style="text-align: right; vertical-align: middle;">
+                  <h2 style="margin: 0; font-size: 22px; font-weight: 800; letter-spacing: 0.5px; color: #0f172a;">HIVERIFT INVOICE</h2>
+                  <p style="margin: 4px 0 0 0; font-size: 14px; font-weight: 700; color: #016139;"># ${invoice.invoiceNo}</p>
+                </td>
+              </tr>
+            </table>
+          </div>
+
+          <div style="padding: 24px 30px;">
+            ${customMessage ? `<div style="padding: 12px 16px; background: #f0fdf4; border-left: 4px solid #016139; border-radius: 4px; font-size: 13px; color: #166534; margin-bottom: 20px;">${customMessage}</div>` : ''}
+
+            <!-- Sender & Client Info -->
+            <table style="width: 100%; margin-bottom: 24px;">
+              <tr>
+                <td style="width: 50%; vertical-align: top; padding-right: 15px;">
+                  <div style="font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; margin-bottom: 4px;">From:</div>
+                  <div style="font-size: 13px; color: #1e293b; white-space: pre-line; line-height: 1.5; font-weight: 500;">${invoice.from || 'HiveRift Softwares Pvt Ltd'}</div>
+                </td>
+                <td style="width: 50%; vertical-align: top; padding-left: 15px;">
+                  <div style="font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; margin-bottom: 4px;">Bill To:</div>
+                  <div style="font-size: 13px; color: #1e293b; white-space: pre-line; line-height: 1.5; font-weight: 600;">${invoice.billTo}</div>
+                  ${invoice.shipTo ? `<div style="font-size: 11px; font-weight: 700; color: #64748b; text-transform: uppercase; margin: 8px 0 2px 0;">Ship To:</div><div style="font-size: 12px; color: #475569; white-space: pre-line;">${invoice.shipTo}</div>` : ''}
+                </td>
+              </tr>
+            </table>
+
+            <!-- Meta Data Grid -->
+            <table style="width: 100%; background: #f8fafc; border-radius: 8px; border: 1px solid #e2e8f0; padding: 12px; margin-bottom: 24px; font-size: 12px;">
+              <tr>
+                <td style="padding: 4px 10px; color: #64748b;">Invoice Date: <strong style="color: #0f172a;">${formattedDate}</strong></td>
+                <td style="padding: 4px 10px; color: #64748b;">Due Date: <strong style="color: #0f172a;">${formattedDueDate}</strong></td>
+              </tr>
+            </table>
+
+            <!-- Items Table -->
+            <table style="width: 100%; border-collapse: collapse; margin-bottom: 24px;">
+              <thead>
+                <tr style="background: #0f172a; color: #ffffff; text-align: left;">
+                  <th style="padding: 10px 12px; font-size: 12px; font-weight: 700;">Item</th>
+                  <th style="padding: 10px 12px; font-size: 12px; font-weight: 700; text-align: center;">Quantity</th>
+                  <th style="padding: 10px 12px; font-size: 12px; font-weight: 700; text-align: right;">Rate</th>
+                  <th style="padding: 10px 12px; font-size: 12px; font-weight: 700; text-align: right;">Amount</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${itemsHtml}
+              </tbody>
+            </table>
+
+            <!-- Summary & Totals -->
+            <table style="width: 100%; margin-bottom: 20px;">
+              <tr>
+                <td style="width: 55%; vertical-align: top; padding-right: 20px;">
+                  ${invoice.notes ? `<div style="margin-bottom: 12px;"><strong style="font-size: 12px; color: #334155;">Notes:</strong><p style="margin: 4px 0; font-size: 12px; color: #64748b; line-height: 1.4; white-space: pre-line;">${invoice.notes}</p></div>` : ''}
+                  ${invoice.terms ? `<div><strong style="font-size: 12px; color: #334155;">Terms & Conditions:</strong><p style="margin: 4px 0; font-size: 11px; color: #64748b; line-height: 1.4; white-space: pre-line;">${invoice.terms}</p></div>` : ''}
+                </td>
+                <td style="width: 45%; vertical-align: top;">
+                  <table style="width: 100%; font-size: 13px; color: #334155;">
+                    <tr>
+                      <td style="padding: 4px 0;">Subtotal:</td>
+                      <td style="padding: 4px 0; text-align: right; font-weight: 600;">${currency}${Number(invoice.subtotal || 0).toLocaleString()}</td>
+                    </tr>
+                    ${invoice.taxAmount > 0 ? `
+                    <tr>
+                      <td style="padding: 4px 0; color: #64748b;">Tax (${invoice.taxRate}%):</td>
+                      <td style="padding: 4px 0; text-align: right;">+${currency}${Number(invoice.taxAmount).toLocaleString()}</td>
+                    </tr>` : ''}
+                    ${invoice.discountAmount > 0 ? `
+                    <tr>
+                      <td style="padding: 4px 0; color: #dc2626;">Discount:</td>
+                      <td style="padding: 4px 0; text-align: right; color: #dc2626;">-${currency}${Number(invoice.discountAmount).toLocaleString()}</td>
+                    </tr>` : ''}
+                    ${invoice.shipping > 0 ? `
+                    <tr>
+                      <td style="padding: 4px 0; color: #64748b;">Shipping:</td>
+                      <td style="padding: 4px 0; text-align: right;">+${currency}${Number(invoice.shipping).toLocaleString()}</td>
+                    </tr>` : ''}
+                    <tr style="border-top: 1px solid #cbd5e1; font-weight: 700; font-size: 14px; color: #0f172a;">
+                      <td style="padding: 8px 0;">Total:</td>
+                      <td style="padding: 8px 0; text-align: right;">${currency}${Number(invoice.total || 0).toLocaleString()}</td>
+                    </tr>
+                    <tr>
+                      <td style="padding: 4px 0; color: #166534;">Amount Paid:</td>
+                      <td style="padding: 4px 0; text-align: right; color: #166534; font-weight: 600;">${currency}${Number(invoice.amountPaid || 0).toLocaleString()}</td>
+                    </tr>
+                    <tr style="border-top: 2px solid #0f172a; font-weight: 800; font-size: 16px; color: #016139;">
+                      <td style="padding: 10px 0;">Balance Due:</td>
+                      <td style="padding: 10px 0; text-align: right;">${currency}${Number(invoice.balanceDue || 0).toLocaleString()}</td>
+                    </tr>
+                  </table>
+                </td>
+              </tr>
+            </table>
+
+            <!-- Banking Info -->
+            <div style="background: #0f172a; border-radius: 8px; padding: 14px 18px; color: #ffffff; font-size: 12px; margin-top: 20px;">
+              <strong style="color: #38bdf8; font-size: 13px;">Official Bank Transfer Details:</strong>
+              <table style="width: 100%; margin-top: 6px; font-size: 12px; color: #cbd5e1;">
+                <tr><td>Account Name:</td><td style="color: #ffffff; font-weight: 600;">HiveRift Software's Pvt Ltd</td></tr>
+                <tr><td>Account No:</td><td style="color: #ffffff; font-weight: 600;">755605000722</td></tr>
+                <tr><td>IFSC Code:</td><td style="color: #ffffff; font-weight: 600;">ICIC0007556 (ICICI Bank)</td></tr>
+                <tr><td>Corporate UPI:</td><td style="color: #38bdf8; font-weight: 600;">MSHIVERIFTSOFTWARESPVTLTD.eazypay@icici</td></tr>
+              </table>
+            </div>
+
+            <div style="margin-top: 24px; text-align: center; font-size: 11px; color: #94a3b8;">
+              HiveRift Softwares Pvt Ltd • info@hiverift.com • +91 9667106291
+            </div>
+          </div>
+        </div>
+      </body>
+      </html>
+    `;
+
+    const subject = customSubject || `Invoice #${invoice.invoiceNo} from HiveRift Softwares Pvt Ltd`;
+    return this.sendMail(to, subject, html);
+  }
 }
