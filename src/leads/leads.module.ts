@@ -6,6 +6,7 @@ import { Lead, LeadSchema } from './schemas/lead.schema';
 import { Client, ClientSchema } from '../clients/schemas/client.schema';
 import { Quotation, QuotationSchema } from '../quotations/schemas/quotation.schema';
 import { Payment, PaymentSchema } from '../payments/schemas/payment.schema';
+import { User, UserSchema } from '../users/schemas/user.schema';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { Payment, PaymentSchema } from '../payments/schemas/payment.schema';
       { name: Client.name, schema: ClientSchema },
       { name: Quotation.name, schema: QuotationSchema },
       { name: Payment.name, schema: PaymentSchema },
+      { name: User.name, schema: UserSchema },
     ]),
   ],
   controllers: [LeadsController],

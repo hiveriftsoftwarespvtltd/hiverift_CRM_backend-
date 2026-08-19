@@ -5,6 +5,7 @@ import { Lead, LeadDocument, LeadStatus } from './schemas/lead.schema';
 import { Client, ClientDocument } from '../clients/schemas/client.schema';
 import { Quotation, QuotationDocument } from '../quotations/schemas/quotation.schema';
 import { Payment, PaymentDocument } from '../payments/schemas/payment.schema';
+import { User, UserDocument } from '../users/schemas/user.schema';
 import { CreateLeadDto } from './dto/create-lead.dto';
 import { UpdateLeadDto } from './dto/update-lead.dto';
 import { CreateFollowupDto } from './dto/create-followup.dto';
@@ -16,6 +17,7 @@ export class LeadsService {
     @InjectModel(Client.name) private clientModel: Model<ClientDocument>,
     @InjectModel(Quotation.name) private quotationModel: Model<QuotationDocument>,
     @InjectModel(Payment.name) private paymentModel: Model<PaymentDocument>,
+    @InjectModel(User.name) private userModel: Model<UserDocument>,
   ) {}
 
   private async generateLeadId(): Promise<string> {
@@ -155,16 +157,40 @@ export class LeadsService {
     }
 
     if (search) {
-      const searchConditions = [
+      // Find all users whose name or email matches search term
+      const matchingUsers = await this.userModel.find(
+        {
+          $or: [
+            { name: { $regex: search, $options: 'i' } },
+            { email: { $regex: search, $options: 'i' } },
+          ],
+        },
+        { _id: 1 },
+      ).lean();
+
+      const matchingUserIds = matchingUsers.map((u) => u._id);
+
+      const searchConditions: any[] = [
         { name: { $regex: search, $options: 'i' } },
         { company: { $regex: search, $options: 'i' } },
         { phone: { $regex: search, $options: 'i' } },
+        { email: { $regex: search, $options: 'i' } },
         { leadId: { $regex: search, $options: 'i' } },
+        { city: { $regex: search, $options: 'i' } },
+        { requirement: { $regex: search, $options: 'i' } },
       ];
+
+      if (matchingUserIds.length > 0) {
+        searchConditions.push(
+          { assignedTo: { $in: matchingUserIds } },
+          { createdBy: { $in: matchingUserIds } },
+        );
+      }
+
       if (filter.$or) {
         filter.$and = [
           { $or: filter.$or },
-          { $or: searchConditions }
+          { $or: searchConditions },
         ];
         delete filter.$or;
       } else {

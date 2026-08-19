@@ -19,6 +19,7 @@ import { DashboardModule } from './dashboard/dashboard.module';
 import { CallingModule } from './calling/calling.module';
 import { SeedModule } from './seed/seed.module';
 import { InvoicesModule } from './invoices/invoices.module';
+import { MonitoringModule } from './monitoring/monitoring.module';
 
 @Module({
   imports: [
@@ -57,6 +58,7 @@ import { InvoicesModule } from './invoices/invoices.module';
     CallingModule,
     SeedModule,
     InvoicesModule,
+    MonitoringModule,
   ],
 })
 export class AppModule {}
