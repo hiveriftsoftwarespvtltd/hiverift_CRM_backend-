@@ -49,4 +49,8 @@ export class CreateLeadDto {
   @ValidateIf((o) => !!o.nextFollowup)
   @IsDateString()
   nextFollowup?: string;
+
+  @IsOptional()
+  @IsString()
+  meetingMode?: string;
 }

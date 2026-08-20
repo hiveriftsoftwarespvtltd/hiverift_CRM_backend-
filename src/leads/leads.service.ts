@@ -117,6 +117,7 @@ export class LeadsService {
     const leadId = await this.generateLeadId();
     const payload: any = {
       ...createLeadDto,
+      meetingMode: createLeadDto.meetingMode || 'online',
       leadId,
       createdBy: new Types.ObjectId(userId),
     };
@@ -142,7 +143,7 @@ export class LeadsService {
   }
 
   async findAll(query: any, user: any): Promise<{ leads: LeadDocument[]; total: number }> {
-    const { search, status, source, assignedTo, page = 1, limit = 20, startDate, endDate } = query;
+    const { search, status, source, meetingMode, assignedTo, page = 1, limit = 20, startDate, endDate } = query;
     const filter: any = {};
 
     // Sales users see only their assigned leads or leads created by them
@@ -204,6 +205,10 @@ export class LeadsService {
 
     if (source && source !== 'all') {
       filter.source = source;
+    }
+
+    if (meetingMode && meetingMode !== 'all') {
+      filter.meetingMode = meetingMode;
     }
 
     if (assignedTo && user.role !== 'sales') {

@@ -102,6 +102,9 @@ export class Lead {
   @Prop({ enum: Object.values(LeadSource), default: LeadSource.OTHER })
   source: string;
 
+  @Prop({ type: String, enum: ['online', 'offline', 'call'], default: 'online' })
+  meetingMode: string;
+
   @Prop({ type: Number, default: 0 })
   estimatedValue: number;
 
