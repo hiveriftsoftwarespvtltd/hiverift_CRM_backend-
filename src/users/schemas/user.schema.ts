@@ -51,9 +51,6 @@ export class User {
   @Prop({ default: true })
   isActive: boolean;
 
-  @Prop({ default: false })
-  isHidden: boolean;
-
   @Prop({ type: Date })
   joiningDate: Date;
 
