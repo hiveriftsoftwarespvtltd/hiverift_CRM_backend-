@@ -115,9 +115,12 @@ export class LeadsService {
 
   async create(createLeadDto: CreateLeadDto, userId: string, user?: any): Promise<LeadDocument> {
     const leadId = await this.generateLeadId();
+    const mode = createLeadDto.meetingMode || createLeadDto.meeting_mode || createLeadDto.meetingType || 'online';
     const payload: any = {
       ...createLeadDto,
-      meetingMode: createLeadDto.meetingMode || 'online',
+      meetingMode: mode,
+      meeting_mode: mode,
+      meetingType: mode,
       leadId,
       createdBy: new Types.ObjectId(userId),
     };
@@ -257,6 +260,13 @@ export class LeadsService {
 
   async update(id: string, updateLeadDto: UpdateLeadDto, userId?: string, user?: any): Promise<LeadDocument> {
     const payload: any = { ...updateLeadDto };
+
+    const mode = updateLeadDto.meetingMode || (updateLeadDto as any).meeting_mode || (updateLeadDto as any).meetingType;
+    if (mode) {
+      payload.meetingMode = mode;
+      payload.meeting_mode = mode;
+      payload.meetingType = mode;
+    }
 
     // If sales role, do not allow changing assignedTo
     if (user?.role === 'sales') {

@@ -53,4 +53,12 @@ export class CreateLeadDto {
   @IsOptional()
   @IsString()
   meetingMode?: string;
+
+  @IsOptional()
+  @IsString()
+  meeting_mode?: string;
+
+  @IsOptional()
+  @IsString()
+  meetingType?: string;
 }

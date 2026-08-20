@@ -105,6 +105,12 @@ export class Lead {
   @Prop({ type: String, enum: ['online', 'offline', 'call'], default: 'online' })
   meetingMode: string;
 
+  @Prop({ type: String })
+  meeting_mode: string;
+
+  @Prop({ type: String })
+  meetingType: string;
+
   @Prop({ type: Number, default: 0 })
   estimatedValue: number;
 
