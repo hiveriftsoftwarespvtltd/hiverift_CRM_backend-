@@ -98,13 +98,18 @@ export class QuotationsService {
     }
   }
 
-  async create(dto: any, userId: string): Promise<QuotationDocument> {
+  async create(dto: any, userId: string, userRole?: string): Promise<QuotationDocument> {
     const quotationNo = await this.generateQuotationNo();
+    const initialStatus = dto.status || (userRole === 'sales' ? 'pending_approval' : 'draft');
     const payload: any = {
       ...dto,
+      status: initialStatus,
       quotationNo,
       createdBy: new Types.ObjectId(userId),
     };
+    if (userRole === 'sales' || initialStatus === 'pending_approval') {
+      payload.approvalRequestedAt = new Date();
+    }
     if (dto.lead) payload.lead = new Types.ObjectId(dto.lead);
     if (dto.client) payload.client = new Types.ObjectId(dto.client);
 
@@ -218,8 +223,51 @@ export class QuotationsService {
     return q;
   }
 
+  async requestApproval(id: string, user?: any): Promise<QuotationDocument> {
+    const q = await this.findOne(id, user);
+    q.status = 'pending_approval';
+    (q as any).approvalRequestedAt = new Date();
+    return await q.save();
+  }
+
+  async approve(id: string, user?: any): Promise<QuotationDocument> {
+    if (user && user.role === 'sales') {
+      throw new ForbiddenException('Only SuperAdmin/Admin can approve quotations');
+    }
+    const q = await this.findOne(id);
+    q.status = 'approved';
+    (q as any).approvedAt = new Date();
+    if (user && user._id) (q as any).approvedBy = new Types.ObjectId(user._id);
+    return await q.save();
+  }
+
+  async reject(id: string, reason?: string, user?: any): Promise<QuotationDocument> {
+    if (user && user.role === 'sales') {
+      throw new ForbiddenException('Only SuperAdmin/Admin can reject quotations');
+    }
+    const q = await this.findOne(id);
+    q.status = 'rejected_approval';
+    (q as any).rejectionReason = reason || 'Not approved by SuperAdmin';
+    return await q.save();
+  }
+
   async sendEmail(id: string, user?: any): Promise<{ success: boolean; message: string }> {
     const quotation = await this.findOne(id, user);
+
+    // Sales Role Approval Check
+    if (user && user.role === 'sales') {
+      const allowed = ['approved', 'sent', 'viewed', 'accepted'];
+      if (!allowed.includes(quotation.status)) {
+        if (quotation.status === 'pending_approval') {
+          throw new ForbiddenException('This quotation is currently PENDING SuperAdmin approval. You cannot send it to the client until SuperAdmin approves it.');
+        } else if (quotation.status === 'rejected_approval') {
+          throw new ForbiddenException(`SuperAdmin REJECTED this quotation: "${quotation.rejectionReason || 'Requires revision'}". Please edit and request approval again.`);
+        } else {
+          throw new ForbiddenException('This quotation must be approved by SuperAdmin before sending to client.');
+        }
+      }
+    }
+
     const recipient = (quotation.lead as any)?.email || (quotation.client as any)?.email;
     const recipientName = (quotation.lead as any)?.name || (quotation.client as any)?.name || 'Valued Client';
 

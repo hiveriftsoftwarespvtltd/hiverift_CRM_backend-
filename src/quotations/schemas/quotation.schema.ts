@@ -55,10 +55,22 @@ export class Quotation {
   validUntil: Date;
 
   @Prop({
-    enum: ['draft', 'sent', 'viewed', 'negotiation', 'accepted', 'rejected', 'expired'],
+    enum: ['draft', 'pending_approval', 'approved', 'rejected_approval', 'sent', 'viewed', 'negotiation', 'accepted', 'rejected', 'expired'],
     default: 'draft',
   })
   status: string;
+
+  @Prop({ type: Types.ObjectId, ref: 'User' })
+  approvedBy: Types.ObjectId;
+
+  @Prop({ type: Date })
+  approvalRequestedAt: Date;
+
+  @Prop({ type: Date })
+  approvedAt: Date;
+
+  @Prop({ type: String })
+  rejectionReason: string;
 
   @Prop({ type: String, default: 'sales_standard' })
   templateType: string;

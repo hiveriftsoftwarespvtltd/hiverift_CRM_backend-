@@ -28,7 +28,7 @@ export class SeedService implements OnModuleInit {
 
       if (!exists) {
         const adminUser = new this.userModel({
-          name: 'Vineet',
+          name: 'Super Admin',
           email: adminEmail,
           password: adminPassword,
           role: UserRole.ADMIN,

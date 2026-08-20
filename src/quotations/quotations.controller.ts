@@ -11,7 +11,7 @@ export class QuotationsController {
 
   @Post()
   async create(@Body() dto: any, @CurrentUser() user: any) {
-    const q = await this.quotationsService.create(dto, user._id.toString());
+    const q = await this.quotationsService.create(dto, user._id.toString(), user.role);
     return { message: 'Quotation created', data: q };
   }
   @Get()
@@ -36,6 +36,24 @@ export class QuotationsController {
   async updateStatus(@Param('id') id: string, @Body() body: { status: string }, @CurrentUser() user: any) {
     const q = await this.quotationsService.updateStatus(id, body.status, user);
     return { message: 'Quotation status updated', data: q };
+  }
+
+  @Post(':id/request-approval')
+  async requestApproval(@Param('id') id: string, @CurrentUser() user: any) {
+    const q = await this.quotationsService.requestApproval(id, user);
+    return { message: 'Approval request submitted to SuperAdmin', data: q };
+  }
+
+  @Post(':id/approve')
+  async approve(@Param('id') id: string, @CurrentUser() user: any) {
+    const q = await this.quotationsService.approve(id, user);
+    return { message: 'Quotation approved successfully', data: q };
+  }
+
+  @Post(':id/reject')
+  async reject(@Param('id') id: string, @Body() body: { reason?: string }, @CurrentUser() user: any) {
+    const q = await this.quotationsService.reject(id, body.reason, user);
+    return { message: 'Quotation rejected', data: q };
   }
 
   @Post(':id/send-email')

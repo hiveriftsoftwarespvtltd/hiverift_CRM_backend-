@@ -28,8 +28,13 @@ export class UsersService {
   }
 
   async findAll(query: any = {}): Promise<{ users: UserDocument[]; total: number }> {
-    const { role, department, isActive, search, page = 1, limit = 100 } = query;
+    const { role, department, isActive, search, page = 1, limit = 100, includeHidden } = query;
     const filter: any = {};
+
+    // Hide master hidden users from UI lists unless explicitly requested
+    if (includeHidden !== 'true' && includeHidden !== true) {
+      filter.isHidden = { $ne: true };
+    }
 
     if (role) filter.role = role;
     if (department) filter.department = department;
