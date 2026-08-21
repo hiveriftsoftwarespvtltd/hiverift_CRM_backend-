@@ -17,7 +17,12 @@ export class RolesGuard implements CanActivate {
     const { user } = context.switchToHttp().getRequest();
     if (!user) throw new ForbiddenException('Access denied');
 
-    const hasRole = requiredRoles.some((role) => user.role === role);
+    const userRole = (user.role || '').toLowerCase().trim();
+    if (['admin', 'management', 'super_admin', 'superadmin'].includes(userRole)) {
+      return true;
+    }
+
+    const hasRole = requiredRoles.some((role) => role.toLowerCase().trim() === userRole);
     if (!hasRole) {
       throw new ForbiddenException(`Access denied. Required role: ${requiredRoles.join(' or ')}`);
     }

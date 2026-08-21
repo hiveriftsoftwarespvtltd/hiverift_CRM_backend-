@@ -174,7 +174,9 @@ export class AttendanceService implements OnModuleInit {
 
     const attendance = await this.attendanceModel.findOne({ employee: new Types.ObjectId(userId), date: today });
     if (!attendance) throw new NotFoundException('No check-in record found for today');
-    if (attendance.checkOut) throw new ConflictException('Shift already completed for today. Next check-in available tomorrow.');
+    if (attendance.checkOut) {
+      return attendance;
+    }
 
     const checkOut = new Date();
     const checkInDate = new Date(attendance.checkIn);
@@ -446,9 +448,13 @@ export class AttendanceService implements OnModuleInit {
     const filter: any = {};
 
     // Regular Employees see ONLY their own attendance
-    if (['sales', 'development', 'digital_marketing'].includes(user?.role)) {
-      const uId = user._id ? user._id.toString() : user.id;
-      filter.employee = new Types.ObjectId(uId);
+    const userRole = (user?.role || '').toLowerCase().trim();
+    const isManagementOrHR = ['admin', 'management', 'hr', 'super_admin', 'superadmin', 'sub_admin'].includes(userRole);
+    if (!isManagementOrHR) {
+      const uId = user?._id ? user._id.toString() : user?.id;
+      if (uId) {
+        filter.employee = new Types.ObjectId(uId);
+      }
     } else if (employee) {
       filter.employee = new Types.ObjectId(employee);
     }
