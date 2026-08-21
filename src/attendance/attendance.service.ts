@@ -20,6 +20,31 @@ function getISTMinutes(date: Date): number {
   }
 }
 
+/**
+ * Calculates 07:00 PM IST (19:00 Asia/Kolkata) on the date of check-in.
+ * 19:00 IST = 13:30 UTC.
+ */
+function get7PMIST(dateInput: Date | string): Date {
+  const date = new Date(dateInput);
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    const parts = formatter.formatToParts(date);
+    const year = Number(parts.find(p => p.type === 'year')?.value);
+    const month = Number(parts.find(p => p.type === 'month')?.value);
+    const day = Number(parts.find(p => p.type === 'day')?.value);
+    return new Date(Date.UTC(year, month - 1, day, 13, 30, 0, 0));
+  } catch {
+    const d = new Date(date);
+    d.setUTCHours(13, 30, 0, 0);
+    return d;
+  }
+}
+
 @Injectable()
 export class AttendanceService implements OnModuleInit {
   constructor(
@@ -51,8 +76,7 @@ export class AttendanceService implements OnModuleInit {
         if (!attendance.checkIn) continue;
 
         const checkInDate = new Date(attendance.checkIn);
-        const cutoff7PM = new Date(checkInDate);
-        cutoff7PM.setHours(19, 0, 0, 0); // 07:00 PM on check-in day
+        const cutoff7PM = get7PMIST(checkInDate);
 
         if (now.getTime() >= cutoff7PM.getTime()) {
           const autoCheckOutTime = cutoff7PM.getTime() > checkInDate.getTime() ? cutoff7PM : checkInDate;
@@ -154,8 +178,7 @@ export class AttendanceService implements OnModuleInit {
 
     const checkOut = new Date();
     const checkInDate = new Date(attendance.checkIn);
-    const cutoff7PM = new Date(checkInDate);
-    cutoff7PM.setHours(19, 0, 0, 0);
+    const cutoff7PM = get7PMIST(checkInDate);
 
     // Auto-end active break if on break during checkout
     if (attendance.activeBreak && attendance.activeBreak.startTime) {
