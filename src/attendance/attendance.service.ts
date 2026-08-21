@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, OnModuleInit } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Attendance, AttendanceDocument } from './schemas/attendance.schema';
@@ -21,12 +21,81 @@ function getISTMinutes(date: Date): number {
 }
 
 @Injectable()
-export class AttendanceService {
+export class AttendanceService implements OnModuleInit {
   constructor(
     @InjectModel(Attendance.name) private attendanceModel: Model<AttendanceDocument>,
     @InjectModel(User.name) private userModel: Model<UserDocument>,
     private readonly notificationsService: NotificationsService,
   ) {}
+
+  onModuleInit() {
+    this.autoCheckoutExpiredShifts();
+    setInterval(() => {
+      this.autoCheckoutExpiredShifts();
+    }, 60000); // Auto check-out scanner runs every 60 seconds
+  }
+
+  /**
+   * Auto Check-Out at 07:00 PM (19:00 IST):
+   * Automatically completes shift at 07:00 PM for any employee who checked in but hasn't checked out by 07:00 PM.
+   */
+  async autoCheckoutExpiredShifts(): Promise<void> {
+    try {
+      const now = new Date();
+      // Find all records where checkOut is null/undefined
+      const activeAttendances = await this.attendanceModel.find({
+        checkOut: { $exists: false },
+      });
+
+      for (const attendance of activeAttendances) {
+        if (!attendance.checkIn) continue;
+
+        const checkInDate = new Date(attendance.checkIn);
+        const cutoff7PM = new Date(checkInDate);
+        cutoff7PM.setHours(19, 0, 0, 0); // 07:00 PM on check-in day
+
+        if (now.getTime() >= cutoff7PM.getTime()) {
+          const autoCheckOutTime = cutoff7PM.getTime() > checkInDate.getTime() ? cutoff7PM : checkInDate;
+
+          // Auto-end active break if employee was on break
+          if (attendance.activeBreak && attendance.activeBreak.startTime) {
+            const breakStart = new Date(attendance.activeBreak.startTime);
+            const breakEnd = breakStart < autoCheckOutTime ? autoCheckOutTime : breakStart;
+            const durationMinutes = Math.max(1, Math.round((breakEnd.getTime() - breakStart.getTime()) / (1000 * 60)));
+            if (!attendance.breaks) attendance.breaks = [];
+            attendance.breaks.push({
+              type: attendance.activeBreak.type,
+              startTime: attendance.activeBreak.startTime,
+              endTime: breakEnd,
+              durationMinutes,
+            });
+            attendance.totalBreakMinutes = attendance.breaks.reduce((sum, b) => sum + (b.durationMinutes || 0), 0);
+            attendance.activeBreak = undefined;
+          }
+
+          // Calculate working hours up to 07:00 PM
+          const grossHours = (autoCheckOutTime.getTime() - checkInDate.getTime()) / (1000 * 60 * 60);
+          const totalBreakHours = (attendance.totalBreakMinutes || 0) / 60;
+          const netHours = Math.max(0, grossHours - totalBreakHours);
+
+          attendance.checkOut = autoCheckOutTime;
+          attendance.workingHours = Math.round(netHours * 100) / 100;
+
+          if (attendance.workingHours < 4.5 && attendance.status === 'present') {
+            attendance.status = 'half_day';
+          }
+
+          if (!attendance.notes?.includes('Auto checked out')) {
+            attendance.notes = `${attendance.notes || 'Shift: 10:00 AM - 07:00 PM'} (Auto checked out at 07:00 PM)`;
+          }
+
+          await attendance.save();
+        }
+      }
+    } catch (err) {
+      console.error('Error in autoCheckoutExpiredShifts:', err);
+    }
+  }
 
   /**
    * Check In:
@@ -84,9 +153,9 @@ export class AttendanceService {
     if (attendance.checkOut) throw new ConflictException('Shift already completed for today. Next check-in available tomorrow.');
 
     const checkOut = new Date();
-    const workingHours = (checkOut.getTime() - attendance.checkIn.getTime()) / (1000 * 60 * 60);
-    attendance.checkOut = checkOut;
-    attendance.workingHours = Math.round(workingHours * 100) / 100;
+    const checkInDate = new Date(attendance.checkIn);
+    const cutoff7PM = new Date(checkInDate);
+    cutoff7PM.setHours(19, 0, 0, 0);
 
     // Auto-end active break if on break during checkout
     if (attendance.activeBreak && attendance.activeBreak.startTime) {
@@ -102,11 +171,51 @@ export class AttendanceService {
       attendance.activeBreak = undefined;
     }
 
+    if (checkOut.getTime() > cutoff7PM.getTime()) {
+      // Worked past 7:00 PM - calculate overtime
+      const extraMins = Math.round((checkOut.getTime() - cutoff7PM.getTime()) / (1000 * 60));
+      const extraH = Math.floor(extraMins / 60);
+      const extraM = extraMins % 60;
+      let extraStr = '';
+      if (extraH > 0 && extraM > 0) extraStr = `${extraH}h ${extraM}m`;
+      else if (extraH > 0) extraStr = `${extraH} hrs`;
+      else extraStr = `${extraM} mins`;
+
+      const formattedCheckOutTime = checkOut.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+      attendance.overtime = `${extraStr} (${formattedCheckOutTime})`;
+      attendance.overtimeMinutes = extraMins;
+
+      // Cap regular checkOut at 7:00 PM
+      attendance.checkOut = cutoff7PM;
+      const grossHours = (cutoff7PM.getTime() - checkInDate.getTime()) / (1000 * 60 * 60);
+      const totalBreakHours = (attendance.totalBreakMinutes || 0) / 60;
+      attendance.workingHours = Math.round(Math.max(0, grossHours - totalBreakHours) * 100) / 100;
+    } else {
+      attendance.checkOut = checkOut;
+      const grossHours = (checkOut.getTime() - checkInDate.getTime()) / (1000 * 60 * 60);
+      const totalBreakHours = (attendance.totalBreakMinutes || 0) / 60;
+      attendance.workingHours = Math.round(Math.max(0, grossHours - totalBreakHours) * 100) / 100;
+    }
+
     // If worked less than 4.5 hours, mark as half-day
     if (attendance.workingHours < 4.5 && attendance.status === 'present') {
       attendance.status = 'half_day';
     }
 
+    return attendance.save();
+  }
+
+  /**
+   * Update Extra Time / Overtime manually for an attendance record
+   */
+  async updateOvertime(id: string, overtime: string, overtimeMinutes?: number): Promise<AttendanceDocument> {
+    const attendance = await this.attendanceModel.findById(id);
+    if (!attendance) throw new NotFoundException('Attendance record not found');
+
+    attendance.overtime = overtime?.trim() || undefined;
+    if (overtimeMinutes !== undefined) {
+      attendance.overtimeMinutes = overtimeMinutes;
+    }
     return attendance.save();
   }
 
@@ -235,7 +344,81 @@ export class AttendanceService {
     await this.attendanceModel.findByIdAndDelete(id);
   }
 
+  async resetRecord(id: string): Promise<void> {
+    await this.attendanceModel.findByIdAndDelete(id);
+  }
+
+  /**
+   * Edit Check-In / Check-Out time & status (HR / Super Admin override)
+   */
+  async editAttendance(
+    id: string,
+    updateDto: { checkInTime?: string; checkOutTime?: string; status?: string; notes?: string },
+  ): Promise<AttendanceDocument> {
+    const attendance = await this.attendanceModel.findById(id);
+    if (!attendance) throw new NotFoundException('Attendance record not found');
+
+    const parseTime = (str?: string) => {
+      if (!str || !str.trim()) return null;
+      const s = str.trim();
+      const isPM = /pm/i.test(s);
+      const isAM = /am/i.test(s);
+      const match = s.match(/(\d{1,2}):(\d{2})/);
+      if (!match) return null;
+      let h = parseInt(match[1], 10);
+      const m = parseInt(match[2], 10);
+      if (isPM && h < 12) h += 12;
+      if (isAM && h === 12) h = 0;
+      if (isNaN(h) || isNaN(m) || h < 0 || h > 23 || m < 0 || m > 59) return null;
+      return { hours: h, minutes: m };
+    };
+
+    if (updateDto.checkInTime) {
+      const parsed = parseTime(updateDto.checkInTime);
+      if (parsed) {
+        const newCheckIn = new Date(attendance.checkIn || attendance.date);
+        newCheckIn.setHours(parsed.hours, parsed.minutes, 0, 0);
+        attendance.checkIn = newCheckIn;
+
+        if (!updateDto.status || updateDto.status === 'auto') {
+          const istMinutes = getISTMinutes(newCheckIn);
+          if (istMinutes <= 600) {
+            attendance.status = 'present';
+          } else {
+            attendance.status = 'late';
+          }
+        }
+      }
+    }
+
+    if (updateDto.checkOutTime) {
+      const parsed = parseTime(updateDto.checkOutTime);
+      if (parsed) {
+        const newCheckOut = new Date(attendance.checkOut || attendance.checkIn || attendance.date);
+        newCheckOut.setHours(parsed.hours, parsed.minutes, 0, 0);
+        attendance.checkOut = newCheckOut;
+      }
+    }
+
+    if (attendance.checkIn && attendance.checkOut) {
+      const grossHours = (new Date(attendance.checkOut).getTime() - new Date(attendance.checkIn).getTime()) / (1000 * 60 * 60);
+      const totalBreakHours = (attendance.totalBreakMinutes || 0) / 60;
+      attendance.workingHours = Math.round(Math.max(0, grossHours - totalBreakHours) * 100) / 100;
+    }
+
+    if (updateDto.status && updateDto.status !== 'auto') {
+      attendance.status = updateDto.status;
+    }
+
+    if (!attendance.notes?.includes('(Adjusted by HR/Admin)')) {
+      attendance.notes = `${attendance.notes || ''} (Adjusted by HR/Admin)`.trim();
+    }
+
+    return attendance.save();
+  }
+
   async findAll(query: any, user: any): Promise<{ attendances: any[]; total: number }> {
+    await this.autoCheckoutExpiredShifts();
     const { employee, status, startDate, endDate, date, page = 1, limit = 100 } = query;
     const filter: any = {};
 

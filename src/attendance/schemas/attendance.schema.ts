@@ -62,6 +62,12 @@ export class Attendance {
 
   @Prop()
   notes: string;
+
+  @Prop({ type: String })
+  overtime?: string;
+
+  @Prop({ type: Number, default: 0 })
+  overtimeMinutes?: number;
 }
 
 export const AttendanceSchema = SchemaFactory.createForClass(Attendance);

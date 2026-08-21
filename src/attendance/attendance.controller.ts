@@ -66,6 +66,32 @@ export class AttendanceController {
     return { message: 'Monthly attendance report', data: report };
   }
 
+  @Put(':id/overtime')
+  async updateOvertime(
+    @Param('id') id: string,
+    @Body() body: { overtime: string; overtimeMinutes?: number },
+  ) {
+    const att = await this.attendanceService.updateOvertime(id, body.overtime, body.overtimeMinutes);
+    return { message: 'Overtime updated successfully', data: att };
+  }
+
+  @Put(':id/edit-time')
+  @Roles('admin')
+  async editAttendance(
+    @Param('id') id: string,
+    @Body() body: { checkInTime?: string; checkOutTime?: string; status?: string; notes?: string },
+  ) {
+    const att = await this.attendanceService.editAttendance(id, body);
+    return { message: 'Attendance updated successfully', data: att };
+  }
+
+  @Delete(':id/reset-record')
+  @Roles('admin')
+  async resetAttendanceRecord(@Param('id') id: string) {
+    await this.attendanceService.resetRecord(id);
+    return { message: 'Attendance record reset successfully' };
+  }
+
   @Delete(':id')
   @Roles('admin', 'management', 'hr')
   async deleteAttendance(@Param('id') id: string) {
