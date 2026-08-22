@@ -1,4 +1,4 @@
-import { Controller, Get, UseGuards } from '@nestjs/common';
+import { Controller, Get, UseGuards, Header } from '@nestjs/common';
 import { DashboardService } from './dashboard.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -11,6 +11,8 @@ export class DashboardController {
   constructor(private readonly dashboardService: DashboardService) {}
 
   @Get('admin')
+  @Header('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+  @Header('Pragma', 'no-cache')
   @Roles('admin', 'management')
   async getAdminDashboard() {
     const data = await this.dashboardService.getAdminDashboard();
@@ -18,6 +20,8 @@ export class DashboardController {
   }
 
   @Get('sales')
+  @Header('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+  @Header('Pragma', 'no-cache')
   @Roles('admin', 'management', 'sales')
   async getSalesDashboard(@CurrentUser() user: any) {
     const data = await this.dashboardService.getSalesDashboard(user._id.toString());
@@ -25,6 +29,8 @@ export class DashboardController {
   }
 
   @Get('tech')
+  @Header('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+  @Header('Pragma', 'no-cache')
   @Roles('admin', 'management', 'development', 'digital_marketing')
   async getTechDashboard(@CurrentUser() user: any) {
     const data = await this.dashboardService.getTechDashboard(user._id.toString());
@@ -32,6 +38,8 @@ export class DashboardController {
   }
 
   @Get('hr')
+  @Header('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+  @Header('Pragma', 'no-cache')
   @Roles('admin', 'management', 'hr')
   async getHRDashboard() {
     const data = await this.dashboardService.getHRDashboard();

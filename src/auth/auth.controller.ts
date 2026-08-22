@@ -1,4 +1,4 @@
-import { Controller, Post, Body, Get, UseGuards, Req, HttpCode } from '@nestjs/common';
+import { Controller, Post, Body, Get, UseGuards, Req, HttpCode, Header } from '@nestjs/common';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { Public } from '../common/decorators/public.decorator';
@@ -35,6 +35,8 @@ export class AuthController {
 
   @UseGuards(JwtAuthGuard)
   @Get('me')
+  @Header('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
+  @Header('Pragma', 'no-cache')
   async getMe(@CurrentUser('_id') userId: string) {
     const user = await this.authService.getMe(userId.toString());
     return { message: 'Profile fetched', data: user };
