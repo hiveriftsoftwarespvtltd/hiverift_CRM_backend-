@@ -217,10 +217,24 @@ export class QuotationsService {
   }
 
   async updateStatus(id: string, status: string, user?: any): Promise<QuotationDocument> {
-    await this.findOne(id, user);
-    const q = await this.quotationModel.findByIdAndUpdate(id, { status }, { new: true });
-    if (!q) throw new NotFoundException('Quotation not found');
-    return q;
+    const q = await this.findOne(id, user);
+    const updatePayload: any = { status };
+    if (status === 'sent') {
+      updatePayload.sentAt = new Date();
+    } else if (status === 'approved') {
+      updatePayload.approvedAt = new Date();
+      if (user && user._id) updatePayload.approvedBy = new Types.ObjectId(user._id);
+    } else if (status === 'pending_approval') {
+      updatePayload.approvalRequestedAt = new Date();
+    }
+
+    const updated = await this.quotationModel.findByIdAndUpdate(id, updatePayload, { new: true });
+    if (!updated) throw new NotFoundException('Quotation not found');
+
+    // Auto-sync into Payments collection if applicable
+    await this.syncQuotationPayment(updated);
+
+    return updated;
   }
 
   async requestApproval(id: string, user?: any): Promise<QuotationDocument> {

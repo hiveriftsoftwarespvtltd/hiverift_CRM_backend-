@@ -36,7 +36,7 @@ export class ClientsService {
   }
 
   async findAll(query: any): Promise<{ clients: ClientDocument[]; total: number }> {
-    const { search, status, page = 1, limit = 20 } = query;
+    const { search, status, page = 1, limit = 1000 } = query;
     const filter: any = {};
     if (search) {
       filter.$or = [

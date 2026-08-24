@@ -111,7 +111,7 @@ export class DashboardService {
       payAgg,
     ] = await Promise.all([
       this.leadModel.countDocuments(filter),
-      this.leadModel.countDocuments({ ...filter, status: { $in: ['contacted', 'interested', 'requirement', 'quotation', 'negotiation', 'won'] } }),
+      this.leadModel.countDocuments({ ...filter, status: 'contacted' }),
       this.leadModel.countDocuments({ ...filter, status: { $in: ['quotation', 'negotiation', 'won'] } }),
       this.leadModel.countDocuments({ ...filter, status: 'won' }),
       this.leadModel.countDocuments({ ...filter, status: 'lost' }),
@@ -178,9 +178,11 @@ export class DashboardService {
 
   // ================= ADMIN / SUPER ADMIN DASHBOARD =================
   async getAdminDashboard() {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    const today = startOfToday;
+    const tomorrow = new Date(startOfToday.getTime() + 24 * 60 * 60 * 1000);
 
     const [
       totalLeads,
@@ -204,13 +206,18 @@ export class DashboardService {
       pipelineFunnel,
       recentAuditLogs,
       recentProjectsList,
+      adminOverdueFollowups,
+      adminFollowupsToday,
+      adminPendingQuotations,
+      adminPaymentDue,
+      adminLeadsWithoutContact,
     ] = await Promise.all([
       this.leadModel.countDocuments(),
-      this.leadModel.countDocuments({ createdAt: { $gte: today } }),
+      this.leadModel.countDocuments({ createdAt: { $gte: startOfToday } }),
       this.userModel.countDocuments({ isActive: true }),
       this.projectModel.countDocuments({ status: { $in: ['assigned', 'started', 'in_progress', 'review', 'client_review'] } }),
       this.projectModel.countDocuments({ status: 'completed' }),
-      this.projectModel.countDocuments({ deadline: { $lt: today }, status: { $nin: ['completed', 'cancelled'] } }),
+      this.projectModel.countDocuments({ deadline: { $lt: startOfToday }, status: { $nin: ['completed', 'cancelled'] } }),
       this.paymentModel.aggregate([
         { $group: { _id: null, total: { $sum: '$invoiceAmount' }, received: { $sum: '$receivedAmount' }, pending: { $sum: '$pendingAmount' } } },
       ]),
@@ -224,13 +231,13 @@ export class DashboardService {
       this.renewalModel.countDocuments({ status: 'next_7_days' }),
       this.renewalModel.countDocuments({ status: 'next_30_days' }),
       this.attendanceModel.aggregate([
-        { $match: { date: today } },
+        { $match: { date: startOfToday } },
         { $group: { _id: '$status', count: { $sum: 1 } } },
       ]),
       this.userModel.countDocuments({ isActive: true }),
       this.leaveModel.countDocuments({ status: 'pending' }),
       this.leadModel
-        .find({ nextFollowup: { $gte: today, $lt: tomorrow } })
+        .find({ nextFollowup: { $gte: startOfToday, $lte: endOfToday }, status: { $nin: ['won', 'lost'] } })
         .populate('assignedTo', 'name email')
         .limit(6)
         .sort({ nextFollowup: 1 }),
@@ -247,6 +254,11 @@ export class DashboardService {
         .populate('assignedTo', 'name')
         .sort({ deadline: 1 })
         .limit(5),
+      this.leadModel.countDocuments({ nextFollowup: { $lt: startOfToday, $ne: null }, status: { $nin: ['won', 'lost'] } }),
+      this.leadModel.countDocuments({ nextFollowup: { $gte: startOfToday, $lte: endOfToday }, status: { $nin: ['won', 'lost'] } }),
+      this.quotationModel.countDocuments({ status: { $in: ['pending_approval', 'pending'] } }),
+      this.paymentModel.countDocuments({ status: { $in: ['pending', 'partial', 'overdue'] } }),
+      this.leadModel.countDocuments({ status: 'new' }),
     ]);
 
     const presentCount = todayAttendanceAgg.reduce((acc, curr) => (curr._id !== 'absent' ? acc + curr.count : acc), 0);
@@ -324,6 +336,13 @@ export class DashboardService {
         pendingLeaves: pendingLeavesCount,
       },
       salesPerformance,
+      actionMetrics: {
+        overdueFollowups: adminOverdueFollowups,
+        followupsToday: adminFollowupsToday,
+        quotationsPending: adminPendingQuotations,
+        paymentDue: adminPaymentDue,
+        leadsWithoutContact: adminLeadsWithoutContact,
+      },
       followupsToday: followupsTodayList,
       salesTrend,
       pipelineFunnel,
@@ -337,9 +356,11 @@ export class DashboardService {
     const matchFilter = { $or: [{ assignedTo: userObjId }, { assignedTo: userId }] };
     const renewalMatch = { $or: [{ assignedSales: userObjId }, { assignedSales: userId }] };
 
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today.getTime() + 24 * 60 * 60 * 1000);
+    const now = new Date();
+    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+    const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+    const today = startOfToday;
+    const tomorrow = new Date(startOfToday.getTime() + 24 * 60 * 60 * 1000);
 
     const [
       myLeads,
@@ -355,17 +376,19 @@ export class DashboardService {
       wonDealsAgg,
       pipelineFunnel,
       salesTrend,
+      myPaymentDue,
+      myLeadsWithoutContact,
     ] = await Promise.all([
       this.leadModel.countDocuments(matchFilter),
-      this.leadModel.countDocuments({ ...matchFilter, createdAt: { $gte: today } }),
-      this.leadModel.countDocuments({ ...matchFilter, nextFollowup: { $gte: today, $lt: tomorrow } }),
-      this.leadModel.countDocuments({ ...matchFilter, nextFollowup: { $lt: today }, status: { $nin: ['won', 'lost'] } }),
-      this.quotationModel.countDocuments({ createdBy: userObjId }),
+      this.leadModel.countDocuments({ ...matchFilter, createdAt: { $gte: startOfToday } }),
+      this.leadModel.countDocuments({ ...matchFilter, nextFollowup: { $gte: startOfToday, $lte: endOfToday }, status: { $nin: ['won', 'lost'] } }),
+      this.leadModel.countDocuments({ ...matchFilter, nextFollowup: { $lt: startOfToday, $ne: null }, status: { $nin: ['won', 'lost'] } }),
+      this.quotationModel.countDocuments({ $or: [{ createdBy: userObjId }, { createdBy: userId }], status: { $in: ['pending_approval', 'pending'] } }),
       this.leadModel.countDocuments({ ...matchFilter, status: 'won' }),
       this.leadModel.countDocuments({ ...matchFilter, status: 'lost' }),
       this.renewalModel.countDocuments({ ...renewalMatch, status: { $in: ['due_today', 'next_7_days'] } }),
       this.leadModel
-        .find({ ...matchFilter, nextFollowup: { $gte: today, $lt: tomorrow } })
+        .find({ ...matchFilter, nextFollowup: { $gte: startOfToday, $lte: endOfToday }, status: { $nin: ['won', 'lost'] } })
         .sort({ nextFollowup: 1 })
         .limit(8),
       this.leadModel.aggregate([
@@ -378,6 +401,8 @@ export class DashboardService {
       ]),
       this.calculatePipelineFunnel(matchFilter),
       this.get7DaysSalesTrend(),
+      this.paymentModel.countDocuments({ $or: [{ createdBy: userObjId }, { createdBy: userId }], status: { $in: ['pending', 'partial', 'overdue'] } }),
+      this.leadModel.countDocuments({ ...matchFilter, status: 'new' }),
     ]);
 
     const wonSalesValue = wonDealsAgg[0]?.total || 0;
@@ -393,6 +418,15 @@ export class DashboardService {
       followupsCount: myFollowupsCount,
       overdueFollowups: myOverdueFollowups,
       pendingQuotations: myQuotations,
+      paymentDue: myPaymentDue,
+      leadsWithoutContact: myLeadsWithoutContact,
+      actionMetrics: {
+        overdueFollowups: myOverdueFollowups,
+        followupsToday: myFollowupsCount,
+        quotationsPending: myQuotations,
+        paymentDue: myPaymentDue,
+        leadsWithoutContact: myLeadsWithoutContact,
+      },
       wonSalesValue,
       renewalsDue,
       myLeadsByStatus,

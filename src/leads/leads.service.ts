@@ -216,6 +216,20 @@ export class LeadsService {
       filter.assignedTo = new Types.ObjectId(assignedTo);
     }
 
+    // Followup specific filter (overdue / today)
+    if (query.followupFilter === 'overdue') {
+      const now = new Date();
+      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+      filter.nextFollowup = { $lt: startOfToday, $ne: null };
+      filter.status = { $nin: ['won', 'lost'] };
+    } else if (query.followupFilter === 'today') {
+      const now = new Date();
+      const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+      const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+      filter.nextFollowup = { $gte: startOfToday, $lte: endOfToday };
+      filter.status = { $nin: ['won', 'lost'] };
+    }
+
     // Date range filter
     if (startDate || endDate) {
       filter.createdAt = {};
