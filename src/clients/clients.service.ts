@@ -81,6 +81,7 @@ export class ClientsService {
       this.clientModel
         .find(filter)
         .populate('assignedSales', 'name email')
+        .populate('createdBy', 'name email role')
         .populate('leadRef', 'leadId name')
         .skip(skip)
         .limit(Number(limit))

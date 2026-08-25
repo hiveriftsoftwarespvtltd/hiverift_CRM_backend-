@@ -90,7 +90,7 @@ export class ProjectsService {
         .find(filter)
         .populate('client', 'name company')
         .populate('assignedTo', 'name email')
-        .populate('assignedBy', 'name')
+        .populate('assignedBy', 'name email role')
         .skip(skip)
         .limit(Number(limit))
         .sort({ createdAt: -1 }),
