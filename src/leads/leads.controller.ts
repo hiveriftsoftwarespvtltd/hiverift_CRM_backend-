@@ -21,6 +21,13 @@ export class LeadsController {
     return { message: 'Lead created successfully', data: lead };
   }
 
+  @Post('import')
+  @Roles('admin', 'management', 'sales')
+  async importLeads(@Body() body: { leads: any[] }, @CurrentUser() user: any) {
+    const result = await this.leadsService.importLeads(body.leads || [], user._id.toString(), user);
+    return { message: `${result.importedCount} Leads imported successfully`, data: result };
+  }
+
   @Get()
   async findAll(@Query() query: any, @CurrentUser() user: any) {
     const result = await this.leadsService.findAll(query, user);

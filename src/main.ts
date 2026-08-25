@@ -16,7 +16,7 @@ async function bootstrap() {
 
   // CORS
   const allowedOrigins = process.env.FRONTEND_URL
-    ? [process.env.FRONTEND_URL, 'http://localhost:5173', 'http://localhost:3000', 'https://onboarding.hiverift.com', 'https://crm.hiverift.com']
+    ? [process.env.FRONTEND_URL, 'http://localhost:5173', 'http://localhost:3000', 'https://onboarding.hiverift.com', 'https://crm.hiverift.com', 'https://hiveriftdesk.online']
     : true;
 
   app.enableCors({

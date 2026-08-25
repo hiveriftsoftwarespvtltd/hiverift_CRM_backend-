@@ -1,7 +1,7 @@
 import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
-import { Lead, LeadDocument, LeadStatus } from './schemas/lead.schema';
+import { Lead, LeadDocument, LeadStatus, LeadSource } from './schemas/lead.schema';
 import { Client, ClientDocument } from '../clients/schemas/client.schema';
 import { Quotation, QuotationDocument } from '../quotations/schemas/quotation.schema';
 import { Payment, PaymentDocument } from '../payments/schemas/payment.schema';
@@ -409,5 +409,72 @@ export class LeadsService {
       .find(filter)
       .populate('assignedTo', 'name email')
       .sort({ nextFollowup: 1 });
+  }
+
+  async importLeads(leadsArray: any[], userId: string, user?: any): Promise<{ importedCount: number; data: LeadDocument[] }> {
+    if (!Array.isArray(leadsArray) || leadsArray.length === 0) {
+      return { importedCount: 0, data: [] };
+    }
+
+    const createdLeads: LeadDocument[] = [];
+    const creatorId = new Types.ObjectId(userId);
+
+    for (const raw of leadsArray) {
+      if (!raw || (!raw.name && !raw.phone)) continue;
+
+      const leadId = await this.generateLeadId();
+      const name = String(raw.name || 'Imported Lead').trim();
+      const phone = String(raw.phone || '').trim();
+      const email = raw.email ? String(raw.email).toLowerCase().trim() : undefined;
+      const company = raw.company ? String(raw.company).trim() : undefined;
+      const city = raw.city ? String(raw.city).trim() : undefined;
+      const requirement = raw.requirement ? String(raw.requirement).trim() : undefined;
+      const estimatedValue = Number(raw.estimatedValue) || 0;
+
+      const validSources = Object.values(LeadSource);
+      const rawSource = raw.source ? String(raw.source).toLowerCase().trim() : 'other';
+      const source = validSources.includes(rawSource as any) ? rawSource : LeadSource.OTHER;
+
+      const validStatuses = Object.values(LeadStatus);
+      const rawStatus = raw.status ? String(raw.status).toLowerCase().trim() : 'new';
+      let status = validStatuses.includes(rawStatus as any) ? rawStatus : LeadStatus.NEW;
+
+      let assignedTo: Types.ObjectId | undefined = undefined;
+      if (user?.role === 'sales') {
+        assignedTo = creatorId;
+        status = LeadStatus.ASSIGNED;
+      } else if (raw.assignedTo && Types.ObjectId.isValid(raw.assignedTo)) {
+        assignedTo = new Types.ObjectId(raw.assignedTo);
+        status = LeadStatus.ASSIGNED;
+      }
+
+      const payload: any = {
+        leadId,
+        name,
+        phone: phone || '0000000000',
+        whatsapp: raw.whatsapp ? String(raw.whatsapp).trim() : phone || undefined,
+        email,
+        company,
+        city,
+        requirement,
+        source,
+        status,
+        estimatedValue,
+        assignedTo,
+        createdBy: creatorId,
+        meetingMode: raw.meetingMode || 'online',
+      };
+
+      const lead = new this.leadModel(payload);
+      const saved = await lead.save();
+
+      if (saved.status === LeadStatus.WON) {
+        await this.autoCreateClientFromWonLead(saved, userId);
+      }
+
+      createdLeads.push(saved);
+    }
+
+    return { importedCount: createdLeads.length, data: createdLeads };
   }
 }
