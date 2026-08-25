@@ -44,37 +44,43 @@ export class ProjectsService {
     return project.save();
   }
 
-  async findAll(query: any, user: any): Promise<{ projects: ProjectDocument[]; total: number }> {
+  async findAll(query: any, user?: any): Promise<{ projects: ProjectDocument[]; total: number }> {
     const { search, status, department, assignedTo, client, page = 1, limit = 20 } = query;
-    const filter: any = {};
+    const conditions: any[] = [];
 
-    if (user && !['admin', 'management', 'super_admin'].includes(user?.role)) {
-      const uId = user._id ? user._id.toString() : user.id;
-      const uObjId = Types.ObjectId.isValid(uId) ? new Types.ObjectId(uId) : uId;
-      filter.$and = [
-        {
+    const role = String(user?.role || '').toLowerCase().trim();
+    const isAdmin = role === 'admin' || role === 'management' || role === 'super_admin';
+
+    if (!isAdmin && user) {
+      const uId = user._id ? user._id.toString() : user.id ? user.id.toString() : '';
+      if (uId && Types.ObjectId.isValid(uId)) {
+        const uObjId = new Types.ObjectId(uId);
+        conditions.push({
           $or: [
             { assignedBy: uObjId },
             { assignedBy: uId },
             { assignedTo: uObjId },
             { assignedTo: uId },
           ],
-        },
-      ];
+        });
+      }
     }
 
     if (search) {
-      const searchOr = [{ name: { $regex: search, $options: 'i' } }, { projectId: { $regex: search, $options: 'i' } }];
-      if (filter.$and) {
-        filter.$and.push({ $or: searchOr });
-      } else {
-        filter.$or = searchOr;
-      }
+      conditions.push({
+        $or: [
+          { name: { $regex: search, $options: 'i' } },
+          { projectId: { $regex: search, $options: 'i' } },
+        ],
+      });
     }
-    if (status) filter.status = status;
-    if (department) filter.department = department;
-    if (assignedTo) filter.assignedTo = new Types.ObjectId(assignedTo);
-    if (client) filter.client = new Types.ObjectId(client);
+
+    if (status) conditions.push({ status });
+    if (department) conditions.push({ department });
+    if (assignedTo && Types.ObjectId.isValid(assignedTo)) conditions.push({ assignedTo: new Types.ObjectId(assignedTo) });
+    if (client && Types.ObjectId.isValid(client)) conditions.push({ client: new Types.ObjectId(client) });
+
+    const filter = conditions.length > 0 ? (conditions.length === 1 ? conditions[0] : { $and: conditions }) : {};
 
     const skip = (Number(page) - 1) * Number(limit);
     const [projects, total] = await Promise.all([
@@ -100,8 +106,11 @@ export class ProjectsService {
       .populate('notes.createdBy', 'name');
     if (!project) throw new NotFoundException('Project not found');
 
-    if (user && !['admin', 'management', 'super_admin'].includes(user?.role)) {
-      const uId = user._id ? user._id.toString() : user.id;
+    const role = String(user?.role || '').toLowerCase().trim();
+    const isAdmin = role === 'admin' || role === 'management' || role === 'super_admin';
+
+    if (!isAdmin && user) {
+      const uId = user._id ? user._id.toString() : user.id ? user.id.toString() : '';
       const assignedByStr = project.assignedBy?._id ? project.assignedBy._id.toString() : project.assignedBy?.toString();
       const assignedToStr = project.assignedTo?._id ? project.assignedTo._id.toString() : project.assignedTo?.toString();
 
@@ -197,13 +206,36 @@ export class ProjectsService {
     return this.remove(id);
   }
 
-  async getStats(): Promise<any> {
+  async getStats(user?: any): Promise<any> {
+    const role = String(user?.role || '').toLowerCase().trim();
+    const isAdmin = role === 'admin' || role === 'management' || role === 'super_admin';
+    const conditions: any[] = [];
+
+    if (!isAdmin && user) {
+      const uId = user._id ? user._id.toString() : user.id ? user.id.toString() : '';
+      if (uId && Types.ObjectId.isValid(uId)) {
+        const uObjId = new Types.ObjectId(uId);
+        conditions.push({
+          $or: [
+            { assignedBy: uObjId },
+            { assignedBy: uId },
+            { assignedTo: uObjId },
+            { assignedTo: uId },
+          ],
+        });
+      }
+    }
+
+    const filter = conditions.length > 0 ? (conditions.length === 1 ? conditions[0] : { $and: conditions }) : {};
+
     const [total, byStatus, byDept] = await Promise.all([
-      this.projectModel.countDocuments(),
+      this.projectModel.countDocuments(filter),
       this.projectModel.aggregate([
+        { $match: filter },
         { $group: { _id: '$status', count: { $sum: 1 } } },
       ]),
       this.projectModel.aggregate([
+        { $match: filter },
         { $group: { _id: '$department', count: { $sum: 1 } } },
       ]),
     ]);

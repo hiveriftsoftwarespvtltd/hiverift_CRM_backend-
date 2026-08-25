@@ -37,13 +37,16 @@ export class ClientsService {
 
   async findAll(query: any, user?: any): Promise<{ clients: ClientDocument[]; total: number }> {
     const { search, status, page = 1, limit = 1000 } = query;
-    const filter: any = {};
+    const conditions: any[] = [];
 
-    if (user && !['admin', 'management', 'super_admin'].includes(user?.role)) {
-      const uId = user._id ? user._id.toString() : user.id;
-      const uObjId = Types.ObjectId.isValid(uId) ? new Types.ObjectId(uId) : uId;
-      filter.$and = [
-        {
+    const role = String(user?.role || '').toLowerCase().trim();
+    const isAdmin = role === 'admin' || role === 'management' || role === 'super_admin';
+
+    if (!isAdmin && user) {
+      const uId = user._id ? user._id.toString() : user.id ? user.id.toString() : '';
+      if (uId && Types.ObjectId.isValid(uId)) {
+        const uObjId = new Types.ObjectId(uId);
+        conditions.push({
           $or: [
             { createdBy: uObjId },
             { createdBy: uId },
@@ -52,24 +55,24 @@ export class ClientsService {
             { accountManager: uObjId },
             { accountManager: uId },
           ],
-        },
-      ];
+        });
+      }
     }
 
     if (search) {
-      const searchOr = [
-        { name: { $regex: search, $options: 'i' } },
-        { company: { $regex: search, $options: 'i' } },
-        { phone: { $regex: search, $options: 'i' } },
-        { clientId: { $regex: search, $options: 'i' } },
-      ];
-      if (filter.$and) {
-        filter.$and.push({ $or: searchOr });
-      } else {
-        filter.$or = searchOr;
-      }
+      conditions.push({
+        $or: [
+          { name: { $regex: search, $options: 'i' } },
+          { company: { $regex: search, $options: 'i' } },
+          { phone: { $regex: search, $options: 'i' } },
+          { clientId: { $regex: search, $options: 'i' } },
+        ],
+      });
     }
-    if (status) filter.status = status;
+
+    if (status) conditions.push({ status });
+
+    const filter = conditions.length > 0 ? (conditions.length === 1 ? conditions[0] : { $and: conditions }) : {};
 
     const skip = (Number(page) - 1) * Number(limit);
     const [clients, total] = await Promise.all([
@@ -94,8 +97,11 @@ export class ClientsService {
 
     if (!client) throw new NotFoundException('Client not found');
 
-    if (user && !['admin', 'management', 'super_admin'].includes(user?.role)) {
-      const uId = user._id ? user._id.toString() : user.id;
+    const role = String(user?.role || '').toLowerCase().trim();
+    const isAdmin = role === 'admin' || role === 'management' || role === 'super_admin';
+
+    if (!isAdmin && user) {
+      const uId = user._id ? user._id.toString() : user.id ? user.id.toString() : '';
       const createdByStr = client.createdBy?.toString();
       const assignedSalesStr = client.assignedSales?._id ? client.assignedSales._id.toString() : client.assignedSales?.toString();
       const accountManagerStr = client.accountManager?.toString();
