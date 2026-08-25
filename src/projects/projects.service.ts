@@ -51,8 +51,8 @@ export class ProjectsService {
     const role = String(user?.role || '').toLowerCase().trim();
     const isAdmin = role === 'admin' || role === 'management' || role === 'super_admin';
 
-    if (!isAdmin && user) {
-      const uId = user._id ? user._id.toString() : user.id ? user.id.toString() : '';
+    if (!isAdmin) {
+      const uId = user?._id ? user._id.toString() : user?.id ? user.id.toString() : user?.sub ? user.sub.toString() : '';
       if (uId && Types.ObjectId.isValid(uId)) {
         const uObjId = new Types.ObjectId(uId);
         conditions.push({
@@ -63,6 +63,8 @@ export class ProjectsService {
             { assignedTo: uId },
           ],
         });
+      } else {
+        conditions.push({ _id: null });
       }
     }
 
@@ -109,8 +111,8 @@ export class ProjectsService {
     const role = String(user?.role || '').toLowerCase().trim();
     const isAdmin = role === 'admin' || role === 'management' || role === 'super_admin';
 
-    if (!isAdmin && user) {
-      const uId = user._id ? user._id.toString() : user.id ? user.id.toString() : '';
+    if (!isAdmin) {
+      const uId = user?._id ? user._id.toString() : user?.id ? user.id.toString() : user?.sub ? user.sub.toString() : '';
       const assignedByStr = project.assignedBy?._id ? project.assignedBy._id.toString() : project.assignedBy?.toString();
       const assignedToStr = project.assignedTo?._id ? project.assignedTo._id.toString() : project.assignedTo?.toString();
 

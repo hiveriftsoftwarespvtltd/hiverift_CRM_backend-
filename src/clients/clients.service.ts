@@ -42,8 +42,8 @@ export class ClientsService {
     const role = String(user?.role || '').toLowerCase().trim();
     const isAdmin = role === 'admin' || role === 'management' || role === 'super_admin';
 
-    if (!isAdmin && user) {
-      const uId = user._id ? user._id.toString() : user.id ? user.id.toString() : '';
+    if (!isAdmin) {
+      const uId = user?._id ? user._id.toString() : user?.id ? user.id.toString() : user?.sub ? user.sub.toString() : '';
       if (uId && Types.ObjectId.isValid(uId)) {
         const uObjId = new Types.ObjectId(uId);
         conditions.push({
@@ -56,6 +56,8 @@ export class ClientsService {
             { accountManager: uId },
           ],
         });
+      } else {
+        conditions.push({ _id: null });
       }
     }
 
@@ -100,8 +102,8 @@ export class ClientsService {
     const role = String(user?.role || '').toLowerCase().trim();
     const isAdmin = role === 'admin' || role === 'management' || role === 'super_admin';
 
-    if (!isAdmin && user) {
-      const uId = user._id ? user._id.toString() : user.id ? user.id.toString() : '';
+    if (!isAdmin) {
+      const uId = user?._id ? user._id.toString() : user?.id ? user.id.toString() : user?.sub ? user.sub.toString() : '';
       const createdByStr = client.createdBy?.toString();
       const assignedSalesStr = client.assignedSales?._id ? client.assignedSales._id.toString() : client.assignedSales?.toString();
       const accountManagerStr = client.accountManager?.toString();
