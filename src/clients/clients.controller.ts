@@ -19,14 +19,14 @@ export class ClientsController {
   }
 
   @Get()
-  async findAll(@Query() query: any) {
-    const result = await this.clientsService.findAll(query);
+  async findAll(@Query() query: any, @CurrentUser() user: any) {
+    const result = await this.clientsService.findAll(query, user);
     return { message: 'Clients fetched', data: result };
   }
 
   @Get(':id')
-  async findOne(@Param('id') id: string) {
-    const client = await this.clientsService.findOne(id);
+  async findOne(@Param('id') id: string, @CurrentUser() user: any) {
+    const client = await this.clientsService.findOne(id, user);
     return { message: 'Client fetched', data: client };
   }
 

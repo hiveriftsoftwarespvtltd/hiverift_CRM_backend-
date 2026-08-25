@@ -48,15 +48,29 @@ export class ProjectsService {
     const { search, status, department, assignedTo, client, page = 1, limit = 20 } = query;
     const filter: any = {};
 
-    if (['development', 'digital_marketing'].includes(user.role)) {
+    if (user && !['admin', 'management', 'super_admin'].includes(user?.role)) {
       const uId = user._id ? user._id.toString() : user.id;
-      filter.$or = [
-        { assignedTo: new Types.ObjectId(uId) },
-        { assignedTo: uId },
+      const uObjId = Types.ObjectId.isValid(uId) ? new Types.ObjectId(uId) : uId;
+      filter.$and = [
+        {
+          $or: [
+            { assignedBy: uObjId },
+            { assignedBy: uId },
+            { assignedTo: uObjId },
+            { assignedTo: uId },
+          ],
+        },
       ];
     }
 
-    if (search) filter.$or = [{ name: { $regex: search, $options: 'i' } }, { projectId: { $regex: search, $options: 'i' } }];
+    if (search) {
+      const searchOr = [{ name: { $regex: search, $options: 'i' } }, { projectId: { $regex: search, $options: 'i' } }];
+      if (filter.$and) {
+        filter.$and.push({ $or: searchOr });
+      } else {
+        filter.$or = searchOr;
+      }
+    }
     if (status) filter.status = status;
     if (department) filter.department = department;
     if (assignedTo) filter.assignedTo = new Types.ObjectId(assignedTo);
@@ -77,7 +91,7 @@ export class ProjectsService {
     return { projects, total };
   }
 
-  async findOne(id: string): Promise<ProjectDocument> {
+  async findOne(id: string, user?: any): Promise<ProjectDocument> {
     const project = await this.projectModel
       .findById(id)
       .populate('client', 'name company email phone address')
@@ -85,6 +99,17 @@ export class ProjectsService {
       .populate('assignedBy', 'name email')
       .populate('notes.createdBy', 'name');
     if (!project) throw new NotFoundException('Project not found');
+
+    if (user && !['admin', 'management', 'super_admin'].includes(user?.role)) {
+      const uId = user._id ? user._id.toString() : user.id;
+      const assignedByStr = project.assignedBy?._id ? project.assignedBy._id.toString() : project.assignedBy?.toString();
+      const assignedToStr = project.assignedTo?._id ? project.assignedTo._id.toString() : project.assignedTo?.toString();
+
+      if (assignedByStr !== uId && assignedToStr !== uId) {
+        throw new NotFoundException('Project not found');
+      }
+    }
+
     return project;
   }
 

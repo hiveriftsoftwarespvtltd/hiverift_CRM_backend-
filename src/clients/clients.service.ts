@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
-import { Model } from 'mongoose';
+import { Model, Types } from 'mongoose';
 import { Client, ClientDocument } from './schemas/client.schema';
 import { CreateClientDto } from './dto/create-client.dto';
 
@@ -31,20 +31,43 @@ export class ClientsService {
   
   async create(dto: CreateClientDto, userId: string): Promise<ClientDocument> {
     const clientId = await this.generateClientId();
-    const client = new this.clientModel({ ...dto, clientId, createdBy: userId });
+    const client = new this.clientModel({ ...dto, clientId, createdBy: new Types.ObjectId(userId) });
     return client.save();
   }
 
-  async findAll(query: any): Promise<{ clients: ClientDocument[]; total: number }> {
+  async findAll(query: any, user?: any): Promise<{ clients: ClientDocument[]; total: number }> {
     const { search, status, page = 1, limit = 1000 } = query;
     const filter: any = {};
+
+    if (user && !['admin', 'management', 'super_admin'].includes(user?.role)) {
+      const uId = user._id ? user._id.toString() : user.id;
+      const uObjId = Types.ObjectId.isValid(uId) ? new Types.ObjectId(uId) : uId;
+      filter.$and = [
+        {
+          $or: [
+            { createdBy: uObjId },
+            { createdBy: uId },
+            { assignedSales: uObjId },
+            { assignedSales: uId },
+            { accountManager: uObjId },
+            { accountManager: uId },
+          ],
+        },
+      ];
+    }
+
     if (search) {
-      filter.$or = [
+      const searchOr = [
         { name: { $regex: search, $options: 'i' } },
         { company: { $regex: search, $options: 'i' } },
         { phone: { $regex: search, $options: 'i' } },
         { clientId: { $regex: search, $options: 'i' } },
       ];
+      if (filter.$and) {
+        filter.$and.push({ $or: searchOr });
+      } else {
+        filter.$or = searchOr;
+      }
     }
     if (status) filter.status = status;
 
@@ -63,13 +86,25 @@ export class ClientsService {
     return { clients, total };
   }
 
-  async findOne(id: string): Promise<ClientDocument> {
+  async findOne(id: string, user?: any): Promise<ClientDocument> {
     const client = await this.clientModel
       .findById(id)
       .populate('assignedSales', 'name email')
       .populate('leadRef', 'leadId name requirement status');
 
     if (!client) throw new NotFoundException('Client not found');
+
+    if (user && !['admin', 'management', 'super_admin'].includes(user?.role)) {
+      const uId = user._id ? user._id.toString() : user.id;
+      const createdByStr = client.createdBy?.toString();
+      const assignedSalesStr = client.assignedSales?._id ? client.assignedSales._id.toString() : client.assignedSales?.toString();
+      const accountManagerStr = client.accountManager?.toString();
+
+      if (createdByStr !== uId && assignedSalesStr !== uId && accountManagerStr !== uId) {
+        throw new NotFoundException('Client not found');
+      }
+    }
+
     return client;
   }
 

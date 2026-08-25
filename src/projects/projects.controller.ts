@@ -32,8 +32,8 @@ export class ProjectsController {
   }
 
   @Get(':id')
-  async findOne(@Param('id') id: string) {
-    const project = await this.projectsService.findOne(id);
+  async findOne(@Param('id') id: string, @CurrentUser() user: any) {
+    const project = await this.projectsService.findOne(id, user);
     return { message: 'Project fetched', data: project };
   }
 
