@@ -21,6 +21,9 @@ export class CreateProjectDto {
   @IsString()
   assignedTo?: string;
 
+  @IsOptional()
+  assignedTeam?: any[];
+
   @IsDateString()
   startDate: string;
 

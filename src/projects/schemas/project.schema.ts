@@ -37,6 +37,16 @@ class ProjectNote {
 }
 const ProjectNoteSchema = SchemaFactory.createForClass(ProjectNote);
 
+@Schema({ _id: false })
+export class AssignedMember {
+  @Prop({ type: Types.ObjectId, ref: 'User', required: true })
+  user: Types.ObjectId;
+
+  @Prop({ trim: true })
+  roleTask: string;
+}
+export const AssignedMemberSchema = SchemaFactory.createForClass(AssignedMember);
+
 @Schema({ timestamps: true })
 export class Project {
   @Prop({ unique: true })
@@ -56,6 +66,9 @@ export class Project {
 
   @Prop({ type: Types.ObjectId, ref: 'User' })
   assignedTo: Types.ObjectId;
+
+  @Prop({ type: [AssignedMemberSchema], default: [] })
+  assignedTeam: AssignedMember[];
 
   @Prop({ type: Types.ObjectId, ref: 'User' })
   assignedBy: Types.ObjectId;

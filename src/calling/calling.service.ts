@@ -342,6 +342,27 @@ export class CallingService {
       return { message: 'Contact already converted to Lead', leadId: contact.convertedLeadId };
     }
 
+    const cleanPhone = String(contact.phone || '').replace(/\D/g, '');
+    if (cleanPhone.length >= 10) {
+      const phoneDigits = cleanPhone.slice(-10);
+      const phoneRegex = new RegExp(phoneDigits);
+      const existingLead = await this.leadModel.findOne({
+        $or: [{ phone: { $regex: phoneRegex } }, { whatsapp: { $regex: phoneRegex } }],
+      });
+
+      if (existingLead) {
+        contact.isConvertedToLead = true;
+        contact.convertedLeadId = existingLead._id as any;
+        contact.callStatus = 'interested';
+        await contact.save();
+
+        return {
+          message: `Lead already exists in CRM (ID: ${existingLead.leadId}, Name: ${existingLead.name}). Contact linked to existing Lead!`,
+          lead: existingLead,
+        };
+      }
+    }
+
     const leadId = await this.generateLeadId();
     const assignedUser = contact.assignedTo || new Types.ObjectId(userId);
 

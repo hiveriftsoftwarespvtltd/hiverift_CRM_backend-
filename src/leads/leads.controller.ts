@@ -46,6 +46,23 @@ export class LeadsController {
     return { message: 'Today follow-ups', data: followups };
   }
 
+  @Get('upcoming-reminders')
+  async getUpcomingReminders(@CurrentUser() user: any) {
+    const reminders = await this.leadsService.getUpcomingReminders(user);
+    return { message: 'Upcoming due reminders', data: reminders };
+  }
+
+  @Post(':id/reminder-outcome')
+  @Roles('admin', 'management', 'sales')
+  async logReminderOutcome(
+    @Param('id') id: string,
+    @Body() body: { note: string; nextFollowup?: string; status?: string },
+    @CurrentUser() user: any,
+  ) {
+    const lead = await this.leadsService.logReminderOutcome(id, body, user);
+    return { message: 'Reminder outcome logged successfully and notification sent to admin', data: lead };
+  }
+
   @Get(':id')
   async findOne(@Param('id') id: string) {
     const lead = await this.leadsService.findOne(id);

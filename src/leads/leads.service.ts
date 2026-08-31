@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ForbiddenException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, BadRequestException, ConflictException } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Lead, LeadDocument, LeadStatus, LeadSource } from './schemas/lead.schema';
@@ -10,6 +10,20 @@ import { CreateLeadDto } from './dto/create-lead.dto';
 import { UpdateLeadDto } from './dto/update-lead.dto';
 import { CreateFollowupDto } from './dto/create-followup.dto';
 
+function sanitizePhone(phoneStr?: string): string {
+  if (!phoneStr) return '';
+  const digits = String(phoneStr).replace(/\D/g, '');
+  if (digits.length === 12 && digits.startsWith('91')) {
+    return digits.slice(2);
+  }
+  if (digits.length === 11 && digits.startsWith('0')) {
+    return digits.slice(1);
+  }
+  return digits;
+}
+
+import { NotificationsService } from '../notifications/notifications.service';
+
 @Injectable()
 export class LeadsService {
   constructor(
@@ -18,6 +32,7 @@ export class LeadsService {
     @InjectModel(Quotation.name) private quotationModel: Model<QuotationDocument>,
     @InjectModel(Payment.name) private paymentModel: Model<PaymentDocument>,
     @InjectModel(User.name) private userModel: Model<UserDocument>,
+    private readonly notificationsService: NotificationsService,
   ) {}
 
   private async generateLeadId(): Promise<string> {
@@ -110,14 +125,83 @@ export class LeadsService {
     await this.quotationModel.updateMany({ lead: lead._id }, { $set: { client: savedClient._id } });
     await this.paymentModel.updateMany({ lead: lead._id }, { $set: { client: savedClient._id } });
 
+    // Auto-create Payment entry for this WON lead if no payment exists yet and lead has value
+    let payment = await this.paymentModel.findOne({
+      $or: [{ client: savedClient._id }, { lead: lead._id }],
+    });
+
+    if (!payment && (lead.estimatedValue || 0) > 0) {
+      const year = new Date().getFullYear();
+      const lastDoc = await this.paymentModel
+        .findOne({ paymentNo: { $regex: new RegExp(`^PAY-${year}-\\d+$`) } })
+        .sort({ paymentNo: -1, createdAt: -1 });
+
+      let nextNum = 1;
+      if (lastDoc && lastDoc.paymentNo) {
+        const match = lastDoc.paymentNo.match(/PAY-\d+-(\d+)/);
+        if (match) nextNum = parseInt(match[1], 10) + 1;
+      }
+      while (await this.paymentModel.findOne({ paymentNo: `PAY-${year}-${String(nextNum).padStart(4, '0')}` })) {
+        nextNum++;
+      }
+      const paymentNo = `PAY-${year}-${String(nextNum).padStart(4, '0')}`;
+
+      const newPayment = new this.paymentModel({
+        paymentNo,
+        client: savedClient._id,
+        lead: lead._id,
+        invoiceAmount: lead.estimatedValue || 0,
+        receivedAmount: 0,
+        pendingAmount: lead.estimatedValue || 0,
+        status: 'pending',
+        paymentMethod: 'bank_transfer',
+        notes: `Automated payment ledger created for WON Lead (${lead.leadId}: ${lead.name})`,
+        createdBy: userId ? new Types.ObjectId(userId) : lead.createdBy,
+      });
+
+      await newPayment.save();
+    }
+
     return savedClient;
   }
 
   async create(createLeadDto: CreateLeadDto, userId: string, user?: any): Promise<LeadDocument> {
+    const cleanPhone = sanitizePhone(createLeadDto.phone);
+    if (!cleanPhone || cleanPhone.length !== 10) {
+      throw new BadRequestException('Phone number must be a valid 10-digit number (e.g. 9876543210)');
+    }
+
+    const cleanWhatsapp = createLeadDto.whatsapp ? sanitizePhone(createLeadDto.whatsapp) : cleanPhone;
+    if (cleanWhatsapp && cleanWhatsapp.length !== 10) {
+      throw new BadRequestException('WhatsApp number must be a valid 10-digit number');
+    }
+
+    const cleanEmail = createLeadDto.email ? createLeadDto.email.toLowerCase().trim() : undefined;
+
+    // Check Duplicate Lead by Phone (regex matches any format e.g. +91 9876543210, 09876543210, 9876543210) or Email
+    const phoneRegex = new RegExp(cleanPhone);
+    const duplicateConditions: any[] = [
+      { phone: { $regex: phoneRegex } },
+      { whatsapp: { $regex: phoneRegex } },
+    ];
+    if (cleanEmail) {
+      duplicateConditions.push({ email: new RegExp(`^${cleanEmail.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}$`, 'i') });
+    }
+
+    const existingLead = await this.leadModel.findOne({ $or: duplicateConditions });
+    if (existingLead) {
+      throw new ConflictException(
+        `Duplicate Lead Error: A lead with phone ${cleanPhone}${cleanEmail ? ' or email' : ''} already exists! (Lead ID: ${existingLead.leadId}, Name: ${existingLead.name})`
+      );
+    }
+
     const leadId = await this.generateLeadId();
     const mode = createLeadDto.meetingMode || 'online';
     const payload: any = {
       ...createLeadDto,
+      phone: cleanPhone,
+      whatsapp: cleanWhatsapp,
+      email: cleanEmail,
       meetingMode: mode,
       leadId,
       createdBy: new Types.ObjectId(userId),
@@ -271,7 +355,53 @@ export class LeadsService {
   }
 
   async update(id: string, updateLeadDto: UpdateLeadDto, userId?: string, user?: any): Promise<LeadDocument> {
+    const existing = await this.leadModel.findById(id);
+    if (!existing) throw new NotFoundException('Lead not found');
+
     const payload: any = { ...updateLeadDto };
+
+    if (updateLeadDto.phone) {
+      const cleanPhone = sanitizePhone(updateLeadDto.phone);
+      if (cleanPhone.length !== 10) {
+        throw new BadRequestException('Phone number must be a valid 10-digit number');
+      }
+      payload.phone = cleanPhone;
+
+      // Duplicate check for another lead using regex
+      const phoneRegex = new RegExp(cleanPhone);
+      const conflict = await this.leadModel.findOne({
+        _id: { $ne: new Types.ObjectId(id) },
+        $or: [{ phone: { $regex: phoneRegex } }, { whatsapp: { $regex: phoneRegex } }],
+      });
+      if (conflict) {
+        throw new ConflictException(
+          `Duplicate Lead Error: Phone number ${cleanPhone} already belongs to another lead (${conflict.leadId}: ${conflict.name}).`
+        );
+      }
+    }
+
+    if (updateLeadDto.whatsapp) {
+      const cleanWhatsapp = sanitizePhone(updateLeadDto.whatsapp);
+      if (cleanWhatsapp.length !== 10) {
+        throw new BadRequestException('WhatsApp number must be a valid 10-digit number');
+      }
+      payload.whatsapp = cleanWhatsapp;
+    }
+
+    if (updateLeadDto.email) {
+      const cleanEmail = updateLeadDto.email.toLowerCase().trim();
+      payload.email = cleanEmail;
+
+      const conflict = await this.leadModel.findOne({
+        _id: { $ne: new Types.ObjectId(id) },
+        email: cleanEmail,
+      });
+      if (conflict) {
+        throw new ConflictException(
+          `Duplicate Lead Error: Email address ${cleanEmail} already belongs to another lead (${conflict.leadId}: ${conflict.name}).`
+        );
+      }
+    }
 
     if (updateLeadDto.meetingMode) {
       payload.meetingMode = updateLeadDto.meetingMode;
@@ -411,25 +541,56 @@ export class LeadsService {
       .sort({ nextFollowup: 1 });
   }
 
-  async importLeads(leadsArray: any[], userId: string, user?: any): Promise<{ importedCount: number; data: LeadDocument[] }> {
+  async importLeads(leadsArray: any[], userId: string, user?: any): Promise<{ importedCount: number; skippedCount: number; data: LeadDocument[] }> {
     if (!Array.isArray(leadsArray) || leadsArray.length === 0) {
-      return { importedCount: 0, data: [] };
+      return { importedCount: 0, skippedCount: 0, data: [] };
     }
 
     const createdLeads: LeadDocument[] = [];
+    let skippedCount = 0;
     const creatorId = new Types.ObjectId(userId);
+    const processedPhones = new Set<string>();
 
     for (const raw of leadsArray) {
       if (!raw || (!raw.name && !raw.phone)) continue;
 
+      const cleanPhone = sanitizePhone(raw.phone);
+      const cleanEmail = raw.email ? String(raw.email).toLowerCase().trim() : undefined;
+
+      // Validate 10 digit phone
+      if (!cleanPhone || cleanPhone.length !== 10) {
+        skippedCount++;
+        continue;
+      }
+
+      // Check duplicates within batch
+      if (processedPhones.has(cleanPhone)) {
+        skippedCount++;
+        continue;
+      }
+
+      // Check duplicates in DB with regex
+      const phoneRegex = new RegExp(cleanPhone);
+      const dupQuery: any[] = [{ phone: { $regex: phoneRegex } }, { whatsapp: { $regex: phoneRegex } }];
+      if (cleanEmail) {
+        dupQuery.push({ email: new RegExp(`^${cleanEmail.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}$`, 'i') });
+      }
+
+      const existingInDb = await this.leadModel.findOne({ $or: dupQuery });
+      if (existingInDb) {
+        skippedCount++;
+        continue;
+      }
+
+      processedPhones.add(cleanPhone);
+
       const leadId = await this.generateLeadId();
-      const name = String(raw.name || 'Imported Lead').trim();
-      const phone = String(raw.phone || '').trim();
-      const email = raw.email ? String(raw.email).toLowerCase().trim() : undefined;
+      const name = String(raw.name || 'Imported Prospect').trim();
       const company = raw.company ? String(raw.company).trim() : undefined;
       const city = raw.city ? String(raw.city).trim() : undefined;
       const requirement = raw.requirement ? String(raw.requirement).trim() : undefined;
       const estimatedValue = Number(raw.estimatedValue) || 0;
+      const cleanWhatsapp = raw.whatsapp ? sanitizePhone(raw.whatsapp) : cleanPhone;
 
       const validSources = Object.values(LeadSource);
       const rawSource = raw.source ? String(raw.source).toLowerCase().trim() : 'other';
@@ -451,9 +612,9 @@ export class LeadsService {
       const payload: any = {
         leadId,
         name,
-        phone: phone || '0000000000',
-        whatsapp: raw.whatsapp ? String(raw.whatsapp).trim() : phone || undefined,
-        email,
+        phone: cleanPhone,
+        whatsapp: cleanWhatsapp,
+        email: cleanEmail,
         company,
         city,
         requirement,
@@ -475,6 +636,123 @@ export class LeadsService {
       createdLeads.push(saved);
     }
 
-    return { importedCount: createdLeads.length, data: createdLeads };
+    return { importedCount: createdLeads.length, skippedCount, data: createdLeads };
+  }
+
+  async getUpcomingReminders(user: any) {
+    const userObjId = Types.ObjectId.isValid(user._id?.toString()) ? new Types.ObjectId(user._id.toString()) : user._id;
+    const roleLower = (user?.role || '').toLowerCase().trim();
+    const isAdminOrManager = ['admin', 'management', 'super_admin', 'superadmin'].includes(roleLower);
+
+    // Super Admin / Admin / Management never get popups (they only receive Notifications)
+    if (isAdminOrManager) {
+      return [];
+    }
+
+    // 3 minutes window before scheduled follow-up time:
+    // Only fetch leads where nextFollowup is between (now - 30 mins) and (now + 3 mins)
+    const now = Date.now();
+    const windowStart = new Date(now - 30 * 60 * 1000); // 30 mins grace window for active shift
+    const windowEnd = new Date(now + 3 * 60 * 1000);     // 3 mins pre-alarm window
+
+    const query: any = {
+      status: { $nin: ['won', 'lost'] },
+      nextFollowup: { $gte: windowStart, $lte: windowEnd },
+      $or: [
+        { assignedTo: userObjId },
+        { assignedTo: user._id.toString() },
+        { createdBy: userObjId },
+        { createdBy: user._id.toString() },
+      ],
+    };
+
+    const leads = await this.leadModel
+      .find(query)
+      .populate('assignedTo', 'name email role phone')
+      .populate('createdBy', 'name email')
+      .sort({ nextFollowup: 1 })
+      .lean();
+
+    // Filter leads where lastReminderHandledAt is missing OR before nextFollowup
+    const dueReminders = leads.filter((l: any) => {
+      if (!l.nextFollowup) return false;
+      if (!l.lastReminderHandledAt) return true;
+      const followupTime = new Date(l.nextFollowup).getTime();
+      const handledTime = new Date(l.lastReminderHandledAt).getTime();
+      return handledTime < followupTime;
+    });
+
+    return dueReminders;
+  }
+
+  async logReminderOutcome(id: string, body: { note: string; nextFollowup?: string; status?: string }, user: any) {
+    if (!body.note || !body.note.trim()) {
+      throw new BadRequestException('Reminder outcome note is required');
+    }
+
+    const lead = await this.leadModel.findById(id);
+    if (!lead) {
+      throw new NotFoundException('Lead not found');
+    }
+
+    const userObjId = Types.ObjectId.isValid(user._id?.toString()) ? new Types.ObjectId(user._id.toString()) : user._id;
+    const authorName = user.name || user.email || 'Sales Executive';
+
+    // 1. Push to followups history
+    lead.followups.push({
+      date: new Date(),
+      type: 'call',
+      summary: body.note.trim(),
+      nextFollowup: body.nextFollowup ? new Date(body.nextFollowup) : undefined,
+      createdByName: authorName,
+      createdAt: new Date(),
+    } as any);
+
+    // 2. Push to notes array
+    lead.notes.push({
+      text: `[Reminder Outcome]: ${body.note.trim()}`,
+      createdBy: userObjId,
+      createdByName: authorName,
+      createdAt: new Date(),
+    } as any);
+
+    // 3. Update nextFollowup & lastReminderHandledAt
+    if (body.nextFollowup) {
+      lead.nextFollowup = new Date(body.nextFollowup);
+    }
+    lead.lastReminderHandledAt = new Date();
+
+    // 4. Update status if provided
+    if (body.status && Object.values(LeadStatus).includes(body.status as LeadStatus)) {
+      lead.status = body.status;
+      if (body.status === LeadStatus.WON && !lead.isConverted) {
+        await this.autoCreateClientFromWonLead(lead, user._id?.toString() || '');
+      }
+    }
+
+    const updated = await lead.save();
+
+    // 5. Send Real-Time Notifications to Super Admin & Admins
+    try {
+      const adminUsers = await this.userModel.find({
+        role: { $in: ['admin', 'management', 'super_admin', 'superadmin'] },
+        isActive: true,
+      }).select('_id');
+
+      for (const admin of adminUsers) {
+        await this.notificationsService.create({
+          userId: admin._id.toString(),
+          title: `🔔 Reminder Note: ${updated.name}`,
+          message: `${authorName} logged follow-up note for lead "${updated.name}": "${body.note.trim()}"`,
+          type: 'lead',
+          module: 'leads',
+          referenceId: updated._id.toString(),
+        });
+      }
+    } catch (notifErr) {
+      console.error('Error sending reminder notifications to admins:', notifErr);
+    }
+
+    return updated;
   }
 }

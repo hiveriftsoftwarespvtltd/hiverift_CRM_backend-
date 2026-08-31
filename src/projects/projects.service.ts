@@ -37,8 +37,20 @@ export class ProjectsService {
       assignedBy: new Types.ObjectId(userId),
     };
     if (dto.client) payload.client = new Types.ObjectId(dto.client);
-    if (dto.assignedTo) payload.assignedTo = new Types.ObjectId(dto.assignedTo);
-    if (dto.leadRef) payload.leadRef = new Types.ObjectId(dto.leadRef);
+    if (dto.assignedTo && Types.ObjectId.isValid(dto.assignedTo)) payload.assignedTo = new Types.ObjectId(dto.assignedTo);
+    if (dto.leadRef && Types.ObjectId.isValid(dto.leadRef)) payload.leadRef = new Types.ObjectId(dto.leadRef);
+
+    if (dto.assignedTeam && Array.isArray(dto.assignedTeam)) {
+      payload.assignedTeam = dto.assignedTeam
+        .filter((m: any) => m && (m.user || m._id) && Types.ObjectId.isValid(m.user || m._id))
+        .map((m: any) => ({
+          user: new Types.ObjectId(m.user || m._id),
+          roleTask: m.roleTask ? String(m.roleTask).trim() : '',
+        }));
+      if (payload.assignedTeam.length > 0 && !payload.assignedTo) {
+        payload.assignedTo = payload.assignedTeam[0].user;
+      }
+    }
 
     const project = new this.projectModel(payload);
     return project.save();
@@ -49,7 +61,8 @@ export class ProjectsService {
     const conditions: any[] = [];
 
     const role = String(user?.role || '').toLowerCase().trim();
-    const isAdmin = role === 'admin' || role === 'management' || role === 'super_admin';
+    const isDevHead = Boolean(user?.isDepartmentHead) && (user?.department === 'development' || role === 'development');
+    const isAdmin = role === 'admin' || role === 'management' || role === 'super_admin' || isDevHead;
 
     if (!isAdmin) {
       const uId = user?._id ? user._id.toString() : user?.id ? user.id.toString() : user?.sub ? user.sub.toString() : '';
@@ -61,6 +74,8 @@ export class ProjectsService {
             { assignedBy: uId },
             { assignedTo: uObjId },
             { assignedTo: uId },
+            { 'assignedTeam.user': uObjId },
+            { 'assignedTeam.user': uId },
           ],
         });
       } else {
@@ -89,7 +104,8 @@ export class ProjectsService {
       this.projectModel
         .find(filter)
         .populate('client', 'name company')
-        .populate('assignedTo', 'name email')
+        .populate('assignedTo', 'name email role department')
+        .populate('assignedTeam.user', 'name email role department designation avatar')
         .populate('assignedBy', 'name email role')
         .skip(skip)
         .limit(Number(limit))
@@ -104,19 +120,25 @@ export class ProjectsService {
       .findById(id)
       .populate('client', 'name company email phone address')
       .populate('assignedTo', 'name email role department')
+      .populate('assignedTeam.user', 'name email role department designation avatar')
       .populate('assignedBy', 'name email')
       .populate('notes.createdBy', 'name');
     if (!project) throw new NotFoundException('Project not found');
 
     const role = String(user?.role || '').toLowerCase().trim();
-    const isAdmin = role === 'admin' || role === 'management' || role === 'super_admin';
+    const isDevHead = Boolean(user?.isDepartmentHead) && (user?.department === 'development' || role === 'development');
+    const isAdmin = role === 'admin' || role === 'management' || role === 'super_admin' || isDevHead;
 
     if (!isAdmin) {
       const uId = user?._id ? user._id.toString() : user?.id ? user.id.toString() : user?.sub ? user.sub.toString() : '';
       const assignedByStr = project.assignedBy?._id ? project.assignedBy._id.toString() : project.assignedBy?.toString();
       const assignedToStr = project.assignedTo?._id ? project.assignedTo._id.toString() : project.assignedTo?.toString();
+      const isMember = project.assignedTeam?.some((m: any) => {
+        const memberId = m.user?._id ? m.user._id.toString() : m.user?.toString();
+        return memberId === uId;
+      });
 
-      if (assignedByStr !== uId && assignedToStr !== uId) {
+      if (assignedByStr !== uId && assignedToStr !== uId && !isMember) {
         throw new NotFoundException('Project not found');
       }
     }
@@ -126,8 +148,25 @@ export class ProjectsService {
 
   async update(id: string, dto: any): Promise<ProjectDocument> {
     const payload: any = { ...dto };
-    if (dto.assignedTo) payload.assignedTo = new Types.ObjectId(dto.assignedTo);
-    const project = await this.projectModel.findByIdAndUpdate(id, payload, { new: true });
+    if (dto.assignedTo && Types.ObjectId.isValid(dto.assignedTo)) {
+      payload.assignedTo = new Types.ObjectId(dto.assignedTo);
+    }
+    if (dto.assignedTeam && Array.isArray(dto.assignedTeam)) {
+      payload.assignedTeam = dto.assignedTeam
+        .filter((m: any) => m && (m.user || m._id) && Types.ObjectId.isValid(m.user || m._id))
+        .map((m: any) => ({
+          user: new Types.ObjectId(m.user || m._id),
+          roleTask: m.roleTask ? String(m.roleTask).trim() : '',
+        }));
+      if (payload.assignedTeam.length > 0 && !payload.assignedTo) {
+        payload.assignedTo = payload.assignedTeam[0].user;
+      }
+    }
+    const project = await this.projectModel.findByIdAndUpdate(id, payload, { new: true })
+      .populate('client', 'name company')
+      .populate('assignedTo', 'name email role department')
+      .populate('assignedTeam.user', 'name email role department designation avatar')
+      .populate('assignedBy', 'name email role');
     if (!project) throw new NotFoundException('Project not found');
     return project;
   }

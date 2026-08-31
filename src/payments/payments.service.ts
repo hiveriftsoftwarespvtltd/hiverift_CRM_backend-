@@ -89,12 +89,12 @@ export class PaymentsService {
     }
 
     const skip = (Number(page) - 1) * Number(limit);
-    const [payments, total] = await Promise.all([
+    const [rawPayments, totalRaw] = await Promise.all([
       this.paymentModel
         .find(filter)
-        .populate('client', 'name company email phone')
-        .populate('lead', 'name company email phone')
-        .populate('quotation', 'quotationNo totalAmount services createdBy')
+        .populate('client', 'name company email phone status')
+        .populate('lead', 'name company email phone status')
+        .populate('quotation', 'quotationNo totalAmount services createdBy status')
         .populate('project', 'name projectId')
         .populate('createdBy', 'name email role')
         .skip(skip)
@@ -102,7 +102,19 @@ export class PaymentsService {
         .sort({ createdAt: -1 }),
       this.paymentModel.countDocuments(filter),
     ]);
-    return { payments, total };
+
+    // Only include payments for WON leads (or payments for clients/projects, or payments where money was received)
+    const payments = rawPayments.filter((p: any) => {
+      if (p.lead) {
+        const leadStatus = p.lead?.status;
+        if (leadStatus && leadStatus !== 'won' && (!p.receivedAmount || p.receivedAmount === 0)) {
+          return false;
+        }
+      }
+      return true;
+    });
+
+    return { payments, total: payments.length };
   }
 
   async findOne(id: string, user?: any): Promise<PaymentDocument> {

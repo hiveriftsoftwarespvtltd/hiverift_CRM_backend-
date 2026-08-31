@@ -27,17 +27,44 @@ export class DashboardService {
     @InjectModel(Quotation.name) private quotationModel: Model<QuotationDocument>,
   ) { }
 
-  private async get7DaysSalesTrend(userFilter?: any) {
+  private async getSalesTrend(period: string = '7d', userFilter?: any) {
     const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
     const result: { name: string; date: string; sales: number }[] = [];
+    const now = new Date();
 
-    for (let i = 6; i >= 0; i--) {
+    if (['1y', '6m', '3m'].includes(period)) {
+      const numMonths = period === '1y' ? 12 : period === '6m' ? 6 : 3;
+      for (let i = numMonths - 1; i >= 0; i--) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        const startOfMonth = new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0);
+        const endOfMonth = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999);
+
+        const filter: any = {
+          receivedDate: { $gte: startOfMonth, $lte: endOfMonth },
+          ...(userFilter || {}),
+        };
+
+        const agg = await this.paymentModel.aggregate([
+          { $match: filter },
+          { $group: { _id: null, total: { $sum: '$receivedAmount' } } },
+        ]);
+
+        result.push({
+          name: months[d.getMonth()],
+          date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
+          sales: agg[0]?.total || 0,
+        });
+      }
+      return result;
+    }
+
+    const numDays = period === '30d' ? 30 : period === '15d' ? 15 : 7;
+    for (let i = numDays - 1; i >= 0; i--) {
       const d = new Date();
       d.setDate(d.getDate() - i);
-      const startOfDay = new Date(d);
-      startOfDay.setHours(0, 0, 0, 0);
-      const endOfDay = new Date(d);
-      endOfDay.setHours(23, 59, 59, 999);
+      const startOfDay = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+      const endOfDay = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
 
       const filter: any = {
         receivedDate: { $gte: startOfDay, $lte: endOfDay },
@@ -49,8 +76,10 @@ export class DashboardService {
         { $group: { _id: null, total: { $sum: '$receivedAmount' } } },
       ]);
 
+      const label = numDays > 7 ? `${d.getDate()} ${months[d.getMonth()]}` : days[d.getDay()];
+
       result.push({
-        name: days[d.getDay()],
+        name: label,
         date: d.toISOString().split('T')[0],
         sales: agg[0]?.total || 0,
       });
@@ -62,10 +91,64 @@ export class DashboardService {
       const totalPayments = await this.paymentModel.aggregate([
         { $group: { _id: null, total: { $sum: '$receivedAmount' } } },
       ]);
-      const base = totalPayments[0]?.total ? Math.round(totalPayments[0].total / 7) : 0;
+      const base = totalPayments[0]?.total ? Math.round(totalPayments[0].total / numDays) : 0;
       if (base > 0) {
         return result.map((r, idx) => ({ ...r, sales: Math.round(base * (0.8 + (idx % 3) * 0.2)) }));
       }
+    }
+
+    return result;
+  }
+
+  private async getLeadTrend(period: string = '7d', userFilter?: any) {
+    const days = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+    const months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const result: { name: string; date: string; leads: number }[] = [];
+    const now = new Date();
+
+    if (['1y', '6m', '3m'].includes(period)) {
+      const numMonths = period === '1y' ? 12 : period === '6m' ? 6 : 3;
+      for (let i = numMonths - 1; i >= 0; i--) {
+        const d = new Date(now.getFullYear(), now.getMonth() - i, 1);
+        const startOfMonth = new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0);
+        const endOfMonth = new Date(d.getFullYear(), d.getMonth() + 1, 0, 23, 59, 59, 999);
+
+        const filter: any = {
+          createdAt: { $gte: startOfMonth, $lte: endOfMonth },
+          ...(userFilter || {}),
+        };
+
+        const count = await this.leadModel.countDocuments(filter);
+
+        result.push({
+          name: months[d.getMonth()],
+          date: `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`,
+          leads: count,
+        });
+      }
+      return result;
+    }
+
+    const numDays = period === '30d' ? 30 : period === '15d' ? 15 : 7;
+    for (let i = numDays - 1; i >= 0; i--) {
+      const d = new Date();
+      d.setDate(d.getDate() - i);
+      const startOfDay = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 0, 0, 0, 0);
+      const endOfDay = new Date(d.getFullYear(), d.getMonth(), d.getDate(), 23, 59, 59, 999);
+
+      const filter: any = {
+        createdAt: { $gte: startOfDay, $lte: endOfDay },
+        ...(userFilter || {}),
+      };
+
+      const count = await this.leadModel.countDocuments(filter);
+      const label = numDays > 7 ? `${d.getDate()} ${months[d.getMonth()]}` : days[d.getDay()];
+
+      result.push({
+        name: label,
+        date: d.toISOString().split('T')[0],
+        leads: count,
+      });
     }
 
     return result;
@@ -177,7 +260,7 @@ export class DashboardService {
   }
 
   // ================= ADMIN / SUPER ADMIN DASHBOARD =================
-  async getAdminDashboard() {
+  async getAdminDashboard(period: string = '7d') {
     const now = new Date();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
     const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
@@ -211,6 +294,7 @@ export class DashboardService {
       adminPendingQuotations,
       adminPaymentDue,
       adminLeadsWithoutContact,
+      leadTrend,
     ] = await Promise.all([
       this.leadModel.countDocuments(),
       this.leadModel.countDocuments({ createdAt: { $gte: startOfToday } }),
@@ -241,7 +325,7 @@ export class DashboardService {
         .populate('assignedTo', 'name email')
         .limit(6)
         .sort({ nextFollowup: 1 }),
-      this.get7DaysSalesTrend(),
+      this.getSalesTrend(period),
       this.calculatePipelineFunnel(),
       this.auditLogModel
         .find()
@@ -259,6 +343,7 @@ export class DashboardService {
       this.quotationModel.countDocuments({ status: { $in: ['pending_approval', 'pending'] } }),
       this.paymentModel.countDocuments({ status: { $in: ['pending', 'partial', 'overdue'] } }),
       this.leadModel.countDocuments({ status: 'new' }),
+      this.getLeadTrend(period),
     ]);
 
     const presentCount = todayAttendanceAgg.reduce((acc, curr) => (curr._id !== 'absent' ? acc + curr.count : acc), 0);
@@ -345,22 +430,39 @@ export class DashboardService {
       },
       followupsToday: followupsTodayList,
       salesTrend,
+      leadTrend,
       pipelineFunnel,
       recentActivity: recentAuditLogs,
     };
   }
 
   // ================= SALES DASHBOARD =================
-  async getSalesDashboard(userId: string) {
+  async getSalesDashboard(userId: string, period: string = '7d') {
     const userObjId = new Types.ObjectId(userId.toString());
-    const matchFilter = { $or: [{ assignedTo: userObjId }, { assignedTo: userId }] };
-    const renewalMatch = { $or: [{ assignedSales: userObjId }, { assignedSales: userId }] };
+    const matchFilter = {
+      $or: [
+        { assignedTo: userObjId },
+        { assignedTo: userId },
+        { createdBy: userObjId },
+        { createdBy: userId },
+      ],
+    };
+    const renewalMatch = {
+      $or: [
+        { assignedSales: userObjId },
+        { assignedSales: userId },
+        { createdBy: userObjId },
+        { createdBy: userId },
+      ],
+    };
 
     const now = new Date();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
     const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
-    const today = startOfToday;
-    const tomorrow = new Date(startOfToday.getTime() + 24 * 60 * 60 * 1000);
+
+    // Fetch lead IDs created by or assigned to this sales employee for linked document matching
+    const myLeadDocs = await this.leadModel.find(matchFilter).select('_id');
+    const myLeadIds = myLeadDocs.map((l) => l._id);
 
     const [
       myLeads,
@@ -378,12 +480,16 @@ export class DashboardService {
       salesTrend,
       myPaymentDue,
       myLeadsWithoutContact,
+      leadTrend,
     ] = await Promise.all([
       this.leadModel.countDocuments(matchFilter),
       this.leadModel.countDocuments({ ...matchFilter, createdAt: { $gte: startOfToday } }),
       this.leadModel.countDocuments({ ...matchFilter, nextFollowup: { $gte: startOfToday, $lte: endOfToday }, status: { $nin: ['won', 'lost'] } }),
       this.leadModel.countDocuments({ ...matchFilter, nextFollowup: { $lt: startOfToday, $ne: null }, status: { $nin: ['won', 'lost'] } }),
-      this.quotationModel.countDocuments({ $or: [{ createdBy: userObjId }, { createdBy: userId }], status: { $in: ['pending_approval', 'pending'] } }),
+      this.quotationModel.countDocuments({
+        $or: [{ createdBy: userObjId }, { createdBy: userId }, { lead: { $in: myLeadIds } }],
+        status: { $in: ['pending_approval', 'pending', 'draft'] },
+      }),
       this.leadModel.countDocuments({ ...matchFilter, status: 'won' }),
       this.leadModel.countDocuments({ ...matchFilter, status: 'lost' }),
       this.renewalModel.countDocuments({ ...renewalMatch, status: { $in: ['due_today', 'next_7_days'] } }),
@@ -400,9 +506,13 @@ export class DashboardService {
         { $group: { _id: null, total: { $sum: '$estimatedValue' } } },
       ]),
       this.calculatePipelineFunnel(matchFilter),
-      this.get7DaysSalesTrend(),
-      this.paymentModel.countDocuments({ $or: [{ createdBy: userObjId }, { createdBy: userId }], status: { $in: ['pending', 'partial', 'overdue'] } }),
+      this.getSalesTrend(period, { $or: [{ createdBy: userObjId }, { createdBy: userId }, { lead: { $in: myLeadIds } }] }),
+      this.paymentModel.countDocuments({
+        $or: [{ createdBy: userObjId }, { createdBy: userId }, { lead: { $in: myLeadIds } }],
+        status: { $in: ['pending', 'partial', 'overdue'] },
+      }),
       this.leadModel.countDocuments({ ...matchFilter, status: 'new' }),
+      this.getLeadTrend(period, matchFilter),
     ]);
 
     const wonSalesValue = wonDealsAgg[0]?.total || 0;
@@ -432,6 +542,7 @@ export class DashboardService {
       myLeadsByStatus,
       pipelineFunnel,
       salesTrend,
+      leadTrend,
     };
   }
 

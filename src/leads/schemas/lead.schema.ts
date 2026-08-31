@@ -6,6 +6,8 @@ export type LeadDocument = Lead & Document;
 export enum LeadStatus {
   NEW = 'new',
   ASSIGNED = 'assigned',
+  NOT_CONNECTED = 'not_connected',
+  NOT_PICKED = 'not_picked',
   CONTACTED = 'contacted',
   INTERESTED = 'interested',
   REQUIREMENT = 'requirement',
@@ -125,6 +127,9 @@ export class Lead {
 
   @Prop({ type: Date })
   nextFollowup: Date;
+
+  @Prop({ type: Date })
+  lastReminderHandledAt: Date;
 
   @Prop({ type: [FollowUpSchema], default: [] })
   followups: FollowUp[];

@@ -3,6 +3,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Quotation, QuotationDocument } from './schemas/quotation.schema';
 import { Payment, PaymentDocument } from '../payments/schemas/payment.schema';
+import { Lead, LeadDocument } from '../leads/schemas/lead.schema';
 import { MailService } from '../common/services/mail.service';
 
 @Injectable()
@@ -10,6 +11,7 @@ export class QuotationsService {
   constructor(
     @InjectModel(Quotation.name) private quotationModel: Model<QuotationDocument>,
     @InjectModel(Payment.name) private paymentModel: Model<PaymentDocument>,
+    @InjectModel(Lead.name) private leadModel: Model<LeadDocument>,
     private mailService: MailService,
   ) {}
 
@@ -39,6 +41,27 @@ export class QuotationsService {
     if (!quotation || !quotation.totalAmount) return;
 
     try {
+      // ONLY create/sync payment if lead status is 'won', or quotation is 'approved'/'accepted', or client is attached
+      let isWonOrApproved = false;
+      if (quotation.status === 'approved' || quotation.status === 'accepted') {
+        isWonOrApproved = true;
+      }
+
+      if (!isWonOrApproved && quotation.lead) {
+        const leadDoc = await this.leadModel.findById(quotation.lead);
+        if (leadDoc && leadDoc.status === 'won') {
+          isWonOrApproved = true;
+        }
+      }
+
+      if (!isWonOrApproved && quotation.client) {
+        isWonOrApproved = true;
+      }
+
+      if (!isWonOrApproved) {
+        return; // Skip payment creation for interested/new/contacted leads
+      }
+
       // Find if payment ledger already exists for this quotation or client
       let payment = await this.paymentModel.findOne({ quotation: quotation._id });
       if (!payment && quotation.client) {
@@ -236,7 +259,7 @@ export class QuotationsService {
 
     return updated;
   }
-
+   
   async requestApproval(id: string, user?: any): Promise<QuotationDocument> {
     const q = await this.findOne(id, user);
     q.status = 'pending_approval';

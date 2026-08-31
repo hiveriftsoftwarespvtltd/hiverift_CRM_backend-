@@ -4,6 +4,7 @@ import { QuotationsController } from './quotations.controller';
 import { QuotationsService } from './quotations.service';
 import { Quotation, QuotationSchema } from './schemas/quotation.schema';
 import { Payment, PaymentSchema } from '../payments/schemas/payment.schema';
+import { Lead, LeadSchema } from '../leads/schemas/lead.schema';
 import { MailService } from '../common/services/mail.service';
 
 @Module({
@@ -11,6 +12,7 @@ import { MailService } from '../common/services/mail.service';
     MongooseModule.forFeature([
       { name: Quotation.name, schema: QuotationSchema },
       { name: Payment.name, schema: PaymentSchema },
+      { name: Lead.name, schema: LeadSchema },
     ]),
   ],
   controllers: [QuotationsController],

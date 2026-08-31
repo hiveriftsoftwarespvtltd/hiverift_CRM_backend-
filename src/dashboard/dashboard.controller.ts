@@ -1,4 +1,4 @@
-import { Controller, Get, UseGuards, Header } from '@nestjs/common';
+import { Controller, Get, UseGuards, Header, Query } from '@nestjs/common';
 import { DashboardService } from './dashboard.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -14,8 +14,8 @@ export class DashboardController {
   @Header('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
   @Header('Pragma', 'no-cache')
   @Roles('admin', 'management')
-  async getAdminDashboard() {
-    const data = await this.dashboardService.getAdminDashboard();
+  async getAdminDashboard(@Query('period') period?: string) {
+    const data = await this.dashboardService.getAdminDashboard(period);
     return { message: 'Admin dashboard', data };
   }
 
@@ -23,8 +23,8 @@ export class DashboardController {
   @Header('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate')
   @Header('Pragma', 'no-cache')
   @Roles('admin', 'management', 'sales')
-  async getSalesDashboard(@CurrentUser() user: any) {
-    const data = await this.dashboardService.getSalesDashboard(user._id.toString());
+  async getSalesDashboard(@CurrentUser() user: any, @Query('period') period?: string) {
+    const data = await this.dashboardService.getSalesDashboard(user._id.toString(), period);
     return { message: 'Sales dashboard', data };
   }
 
