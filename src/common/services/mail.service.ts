@@ -10,7 +10,7 @@ export class MailService {
   constructor(private configService: ConfigService) {
     const host = this.configService.get<string>('EMAIL_HOST') || 'smtp.gmail.com';
     const port = Number(this.configService.get<number>('EMAIL_PORT')) || 587;
-    const secure = this.configService.get<string>('EMAIL_SECURE') === 'true';
+    const secure = this.configService.get<string>('EMAIL_SECURE') === 'true' || port === 465;
     const user = this.configService.get<string>('EMAIL_USER');
     const pass = this.configService.get<string>('EMAIL_PASS');
 

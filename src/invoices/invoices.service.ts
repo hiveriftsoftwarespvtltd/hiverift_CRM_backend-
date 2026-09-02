@@ -127,7 +127,7 @@ export class InvoicesService {
 
     return { invoices, total };
   }
-
+  
   async findOne(id: string): Promise<InvoiceDocument> {
     const invoice = await this.invoiceModel
       .findById(id)

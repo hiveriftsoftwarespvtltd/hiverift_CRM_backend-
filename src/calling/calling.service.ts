@@ -13,7 +13,7 @@ export class CallingService {
     @InjectModel(CallingContact.name) private contactModel: Model<CallingContactDocument>,
     @InjectModel(Lead.name) private leadModel: Model<LeadDocument>,
     @InjectModel(User.name) private userModel: Model<UserDocument>,
-  ) {}
+  ) { }
 
   private async generateBatchNo(): Promise<string> {
     const year = new Date().getFullYear();
@@ -379,9 +379,8 @@ export class CallingService {
       createdBy: new Types.ObjectId(userId),
       notes: [
         {
-          text: `Converted from Telecalling contact (${contact.phone}). Initial remark: ${
-            contact.callHistory[contact.callHistory.length - 1]?.remark || 'Interested in services'
-          }`,
+          text: `Converted from Telecalling contact (${contact.phone}). Initial remark: ${contact.callHistory[contact.callHistory.length - 1]?.remark || 'Interested in services'
+            }`,
           createdBy: new Types.ObjectId(userId),
           createdAt: new Date(),
         },

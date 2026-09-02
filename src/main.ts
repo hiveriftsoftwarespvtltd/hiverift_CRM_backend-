@@ -42,7 +42,6 @@ async function bootstrap() {
 
   // Global Prefix
   app.setGlobalPrefix('api/v1');
-
   // Global Pipes
   app.useGlobalPipes(
     new ValidationPipe({

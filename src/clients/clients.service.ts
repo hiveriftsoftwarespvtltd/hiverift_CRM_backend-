@@ -127,7 +127,7 @@ export class ClientsService {
     const result = await this.clientModel.findByIdAndDelete(id);
     if (!result) throw new NotFoundException('Client not found');
   }
-
+  
   async delete(id: string): Promise<void> {
     return this.remove(id);
   }

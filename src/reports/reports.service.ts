@@ -78,11 +78,72 @@ export class ReportsService {
 
   async getFinanceReport(query: any) {
     const summary = await this.paymentModel.aggregate([
-      { $group: { _id: '$status', totalInvoice: { $sum: '$invoiceAmount' }, received: { $sum: '$receivedAmount' }, pending: { $sum: '$pendingAmount' } } },
+      { $group: { _id: '$status', totalInvoice: { $sum: '$invoiceAmount' }, received: { $sum: '$receivedAmount' }, pending: { $sum: '$pendingAmount' }, count: { $sum: 1 } } },
     ]);
+
     const total = await this.paymentModel.aggregate([
       { $group: { _id: null, totalInvoice: { $sum: '$invoiceAmount' }, received: { $sum: '$receivedAmount' }, pending: { $sum: '$pendingAmount' } } },
     ]);
-    return { summary, totals: total[0] || { totalInvoice: 0, received: 0, pending: 0 } };
+
+    // Monthly Aggregation Trend
+    const monthlyTrend = await this.paymentModel.aggregate([
+      {
+        $group: {
+          _id: {
+            year: { $year: { $ifNull: ['$receivedDate', '$createdAt'] } },
+            month: { $month: { $ifNull: ['$receivedDate', '$createdAt'] } },
+          },
+          totalInvoice: { $sum: '$invoiceAmount' },
+          received: { $sum: '$receivedAmount' },
+          pending: { $sum: '$pendingAmount' },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { '_id.year': 1, '_id.month': 1 } },
+    ]);
+
+    // Daily Aggregation Trend (Last 30 days)
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+
+    const dailyTrend = await this.paymentModel.aggregate([
+      { $match: { createdAt: { $gte: thirtyDaysAgo } } },
+      {
+        $group: {
+          _id: {
+            year: { $year: '$createdAt' },
+            month: { $month: '$createdAt' },
+            day: { $dayOfMonth: '$createdAt' },
+          },
+          totalInvoice: { $sum: '$invoiceAmount' },
+          received: { $sum: '$receivedAmount' },
+          pending: { $sum: '$pendingAmount' },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { '_id.year': 1, '_id.month': 1, '_id.day': 1 } },
+    ]);
+
+    // Yearly Aggregation Trend
+    const yearlyTrend = await this.paymentModel.aggregate([
+      {
+        $group: {
+          _id: { year: { $year: { $ifNull: ['$receivedDate', '$createdAt'] } } },
+          totalInvoice: { $sum: '$invoiceAmount' },
+          received: { $sum: '$receivedAmount' },
+          pending: { $sum: '$pendingAmount' },
+          count: { $sum: 1 },
+        },
+      },
+      { $sort: { '_id.year': 1 } },
+    ]);
+
+    return {
+      summary,
+      totals: total[0] || { totalInvoice: 0, received: 0, pending: 0 },
+      monthlyTrend,
+      dailyTrend,
+      yearlyTrend,
+    };
   }
 }

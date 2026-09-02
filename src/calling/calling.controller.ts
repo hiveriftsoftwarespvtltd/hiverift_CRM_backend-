@@ -10,7 +10,7 @@ import { CurrentUser } from '../common/decorators/current-user.decorator';
 @UseGuards(JwtAuthGuard, RolesGuard)
 @Roles('admin', 'management', 'sales')
 export class CallingController {
-  constructor(private readonly callingService: CallingService) {}
+  constructor(private readonly callingService: CallingService) { }
 
   @Post('upload')
   async uploadBatch(@Body() dto: UploadBatchDto, @CurrentUser() user: any) {
@@ -41,7 +41,7 @@ export class CallingController {
     const result = await this.callingService.getBatches(query);
     return { message: 'Batches fetched', data: result };
   }
-
+  
   @Post('log-call/:id')
   async logCall(@Param('id') id: string, @Body() dto: LogCallDto, @CurrentUser() user: any) {
     const result = await this.callingService.logCall(id, user._id.toString(), dto);
