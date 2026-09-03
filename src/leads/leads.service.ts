@@ -808,4 +808,10 @@ export class LeadsService {
 
     return updated;
   }
+
+  async bulkDelete(ids: string[]): Promise<{ count: number }> {
+    if (!ids || !ids.length) return { count: 0 };
+    const res = await this.leadModel.deleteMany({ _id: { $in: ids } });
+    return { count: res.deletedCount || 0 };
+  }
 }

@@ -68,6 +68,12 @@ export class QuotationsController {
     return { message: result.message, data: result };
   }
 
+  @Post('bulk-delete')
+  async bulkDelete(@Body() body: { ids: string[] }, @CurrentUser() user: any) {
+    const result = await this.quotationsService.bulkDelete(body.ids || [], user);
+    return { message: `${result.count} Quotations deleted successfully`, data: result };
+  }
+
   @Delete(':id')
   async remove(@Param('id') id: string, @CurrentUser() user: any) {
     await this.quotationsService.remove(id, user);

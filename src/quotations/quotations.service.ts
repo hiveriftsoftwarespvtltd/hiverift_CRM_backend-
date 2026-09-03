@@ -332,5 +332,11 @@ export class QuotationsService {
   async delete(id: string, user?: any): Promise<void> {
     return this.remove(id, user);
   }
+
+  async bulkDelete(ids: string[], user?: any): Promise<{ count: number }> {
+    if (!ids || !ids.length) return { count: 0 };
+    const res = await this.quotationModel.deleteMany({ _id: { $in: ids } });
+    return { count: res.deletedCount || 0 };
+  }
 }
 

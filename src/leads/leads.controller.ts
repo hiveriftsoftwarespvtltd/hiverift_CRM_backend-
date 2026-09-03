@@ -120,6 +120,13 @@ export class LeadsController {
     return { message: 'Note added', data: lead };
   }
 
+  @Post('bulk-delete')
+  @Roles('admin', 'management', 'sales')
+  async bulkDelete(@Body() body: { ids: string[] }) {
+    const result = await this.leadsService.bulkDelete(body.ids || []);
+    return { message: `${result.count} Leads deleted successfully`, data: result };
+  }
+
   @Delete(':id')
   @Roles('admin', 'management', 'sales')
   async remove(@Param('id') id: string) {
