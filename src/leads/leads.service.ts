@@ -33,7 +33,7 @@ export class LeadsService {
     @InjectModel(Payment.name) private paymentModel: Model<PaymentDocument>,
     @InjectModel(User.name) private userModel: Model<UserDocument>,
     private readonly notificationsService: NotificationsService,
-  ) {}
+  ) { }
 
   private async generateLeadId(): Promise<string> {
     const leads = await this.leadModel.find({}, { leadId: 1 }).lean();
@@ -163,6 +163,58 @@ export class LeadsService {
     }
 
     return savedClient;
+  }
+
+  async createPublicLead(body: any): Promise<LeadDocument> {
+    const rawPhone = body.phone || body.mobile || body.contact || body.whatsapp;
+    const cleanPhone = sanitizePhone(rawPhone);
+    const finalPhone = cleanPhone && cleanPhone.length === 10 ? cleanPhone : (rawPhone ? String(rawPhone).slice(-10) : '0000000000');
+
+    const name = body.name || body.fullName || body.full_name || 'Website Visitor';
+    const email = body.email ? String(body.email).toLowerCase().trim() : undefined;
+    const company = body.company || body.organization || body.business || '';
+    const requirement = body.requirement || body.message || body.service || body.notes || body.requirementDetails || '';
+    const city = body.city || body.location || '';
+    const validSources = Object.values(LeadSource) as string[];
+    const rawSource = String(body.source || 'website').toLowerCase();
+    const source = validSources.includes(rawSource) ? rawSource : LeadSource.WEBSITE;
+
+    // Auto-generate leadId
+    const leadId = await this.generateLeadId();
+
+    const newLead = new this.leadModel({
+      leadId,
+      name,
+      phone: finalPhone,
+      whatsapp: finalPhone,
+      email,
+      company,
+      requirement,
+      city,
+      source,
+      status: LeadStatus.NEW,
+      assignedTo: undefined,
+      createdBy: undefined,
+    });
+
+    const savedLead = await newLead.save();
+
+    // Trigger realtime notification to admin / management team
+    try {
+      const admins = await this.userModel.find({ role: { $in: ['admin', 'management'] } }, { _id: 1 }).lean();
+      for (const admin of admins) {
+        await this.notificationsService.create({
+          userId: admin._id.toString(),
+          title: `🌐 New Website Lead: ${name}`,
+          message: `A new lead has been submitted via Landing Page form (${finalPhone}).`,
+          type: 'lead_assigned',
+        });
+      }
+    } catch (e) {
+      // Ignore notification error
+    }
+
+    return savedLead;
   }
 
   async create(createLeadDto: CreateLeadDto, userId: string, user?: any): Promise<LeadDocument> {

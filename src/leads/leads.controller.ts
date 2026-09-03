@@ -9,10 +9,27 @@ import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { LeadStatus } from './schemas/lead.schema';
 
+import { Public } from '../common/decorators/public.decorator';
+
 @Controller('leads')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class LeadsController {
-  constructor(private readonly leadsService: LeadsService) {}
+  constructor(private readonly leadsService: LeadsService) { }
+
+  @Post('public-webhook')
+  @Public()
+  async createPublicLead(@Body() body: any) {
+    const lead = await this.leadsService.createPublicLead(body);
+    return {
+      success: true,
+      message: 'Lead received and added to CRM successfully',
+      data: {
+        leadId: lead.leadId,
+        id: lead._id,
+        name: lead.name,
+      },
+    };
+  }
 
   @Post()
   @Roles('admin', 'management', 'sales')
