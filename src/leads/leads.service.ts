@@ -192,6 +192,7 @@ export class LeadsService {
       requirement,
       city,
       source,
+      meetingMode: body.meetingMode || body.meeting_mode || '',
       status: LeadStatus.NEW,
       assignedTo: undefined,
       createdBy: undefined,
