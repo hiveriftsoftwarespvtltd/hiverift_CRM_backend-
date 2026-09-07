@@ -1,5 +1,5 @@
-import { Controller, Get, Post, Query, Body, Req, Headers, UnauthorizedException, HttpCode, HttpStatus, UseGuards } from '@nestjs/common';
-import { Request } from 'express';
+import { Controller, Get, Post, Query, Body, Req, Headers, UnauthorizedException, HttpCode, HttpStatus, UseGuards, Res } from '@nestjs/common';
+import { Request, Response } from 'express';
 import { MetaWebhookService } from './meta-webhook.service';
 import { MetaVerificationDto, TestMetaIngestDto } from './dto/meta-webhook.dto';
 import { Public } from '../common/decorators/public.decorator';
@@ -13,16 +13,25 @@ export class MetaController {
 
   /**
    * GET /api/v1/meta/webhook
-   * Meta Webhook Verification Endpoint used during Meta App Setup
+   * Meta Webhook Verification Endpoint used during Meta App Setup.
+   * Uses Express @Res() to bypass global TransformInterceptor and return raw text/plain challenge.
    */
   @Get('webhook')
   @Public()
-  verifyWebhook(@Query() query: MetaVerificationDto): string {
+  verifyWebhook(@Query() query: MetaVerificationDto, @Res() res: Response): void {
     const mode = query['hub.mode'];
     const verifyToken = query['hub.verify_token'];
     const challenge = query['hub.challenge'];
 
-    return this.metaWebhookService.verifyWebhook(mode, verifyToken, challenge);
+    try {
+      const challengeStr = this.metaWebhookService.verifyWebhook(mode, verifyToken, challenge);
+      res.setHeader('Content-Type', 'text/plain');
+      res.status(HttpStatus.OK).send(challengeStr);
+    } catch (err: any) {
+      const status = err.getStatus ? err.getStatus() : HttpStatus.FORBIDDEN;
+      res.setHeader('Content-Type', 'text/plain');
+      res.status(status).send(err.message || 'Forbidden');
+    }
   }
 
   /**
