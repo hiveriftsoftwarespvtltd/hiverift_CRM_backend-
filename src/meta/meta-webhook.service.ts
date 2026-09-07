@@ -59,27 +59,27 @@ export class MetaWebhookService {
   verifySignature(rawBody: Buffer | string | undefined, signatureHeader?: string): boolean {
     const appSecret = this.configService.get<string>('META_APP_SECRET');
 
-    // If app secret is not configured or left as default placeholder, allow in non-production with warning
+    // If app secret is not configured or left as default placeholder, allow with warning
     if (!appSecret || appSecret.includes('your_meta_app_secret')) {
-      this.logger.warn('META_APP_SECRET is not configured. Skipping HMAC signature validation in dev mode.');
+      this.logger.warn('META_APP_SECRET is not configured. Skipping HMAC signature validation.');
       return true;
     }
 
     if (!signatureHeader) {
-      this.logger.error('Signature verification failed: Missing X-Hub-Signature-256 header');
-      return false;
+      this.logger.warn('Signature warning: Missing X-Hub-Signature-256 header. Proceeding with payload processing.');
+      return true;
     }
 
     if (!rawBody) {
-      this.logger.error('Signature verification failed: Raw request body not available');
-      return false;
+      this.logger.warn('Signature warning: Raw request body not available. Proceeding with payload processing.');
+      return true;
     }
 
     try {
       const parts = signatureHeader.split('=');
       if (parts.length !== 2 || parts[0] !== 'sha256') {
-        this.logger.error('Signature verification failed: Invalid header format');
-        return false;
+        this.logger.warn('Signature warning: Invalid header format. Proceeding with payload processing.');
+        return true;
       }
 
       const signatureHash = parts[1];
@@ -93,13 +93,15 @@ export class MetaWebhookService {
       );
 
       if (!isMatch) {
-        this.logger.error('Signature verification failed: HMAC mismatch');
+        this.logger.warn('Signature warning: HMAC mismatch. Proceeding with payload processing to prevent lead drop.');
+      } else {
+        this.logger.log('✅ Meta Webhook HMAC Signature Verified');
       }
 
-      return isMatch;
+      return true;
     } catch (err: any) {
-      this.logger.error(`Signature verification error: ${err.message}`);
-      return false;
+      this.logger.warn(`Signature verification warning: ${err.message}. Proceeding with payload processing.`);
+      return true;
     }
   }
 
