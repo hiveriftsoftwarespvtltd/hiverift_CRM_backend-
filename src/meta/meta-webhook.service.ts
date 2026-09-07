@@ -170,17 +170,21 @@ export class MetaWebhookService {
     const finalPhone = cleanPhone && cleanPhone.length === 10 ? cleanPhone : (mapped.phone ? String(mapped.phone).slice(-10) : '0000000000');
     const cleanEmail = mapped.email ? String(mapped.email).toLowerCase().trim() : undefined;
 
-    // 4. SECONDARY DUP CHECK by Phone & Email
-    const phoneRegex = new RegExp(finalPhone);
-    const dupConditions: any[] = [
-      { phone: { $regex: phoneRegex } },
-      { whatsapp: { $regex: phoneRegex } },
-    ];
-    if (cleanEmail) {
-      dupConditions.push({ email: new RegExp(`^${cleanEmail.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}$`, 'i') });
+    // 4. SECONDARY DUP CHECK by Phone & Email (Only for valid real contact info)
+    let existingLeadByContact: LeadDocument | null = null;
+    if (finalPhone !== '0000000000' || cleanEmail) {
+      const dupConditions: any[] = [];
+      if (finalPhone !== '0000000000') {
+        const phoneRegex = new RegExp(finalPhone);
+        dupConditions.push({ phone: { $regex: phoneRegex } }, { whatsapp: { $regex: phoneRegex } });
+      }
+      if (cleanEmail) {
+        dupConditions.push({ email: new RegExp(`^${cleanEmail.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, '\\$&')}$`, 'i') });
+      }
+      if (dupConditions.length > 0) {
+        existingLeadByContact = await this.leadModel.findOne({ $or: dupConditions });
+      }
     }
-
-    const existingLeadByContact = await this.leadModel.findOne({ $or: dupConditions });
 
     if (existingLeadByContact) {
       this.logger.log(`Duplicate Contact Detected: Lead ${existingLeadByContact.leadId} matches phone/email. Enriching with Meta attribution (metaLeadId=${leadgenId}).`);
