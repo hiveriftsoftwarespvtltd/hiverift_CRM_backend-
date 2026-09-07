@@ -342,7 +342,12 @@ export class LeadsService {
     }
 
     if (source && source !== 'all') {
-      filter.source = source;
+      const srcStr = String(source).trim();
+      if (srcStr.toUpperCase() === 'META' || srcStr.toLowerCase() === 'facebook') {
+        filter.source = { $in: ['META', 'facebook', 'META_LEAD_AD', /^meta$/i, /^facebook$/i] };
+      } else {
+        filter.source = { $regex: new RegExp(`^${srcStr}$`, 'i') };
+      }
     }
 
     if (meetingMode && meetingMode !== 'all') {
