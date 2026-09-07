@@ -18,6 +18,7 @@ export enum LeadStatus {
 }
 
 export enum LeadSource {
+  META = 'META',
   FACEBOOK = 'facebook',
   GOOGLE = 'google',
   WEBSITE = 'website',
@@ -145,6 +146,40 @@ export class Lead {
 
   @Prop()
   lostReason: string;
+
+  // Meta Lead Ads Integration & Attribution Fields
+  @Prop({ type: String, sparse: true, index: true })
+  metaLeadId?: string;
+
+  @Prop({ type: String })
+  platform?: string;
+
+  @Prop({ type: String })
+  campaignId?: string;
+
+  @Prop({ type: String })
+  campaignName?: string;
+
+  @Prop({ type: String })
+  adSetId?: string;
+
+  @Prop({ type: String })
+  adSetName?: string;
+
+  @Prop({ type: String })
+  adId?: string;
+
+  @Prop({ type: String })
+  adName?: string;
+
+  @Prop({ type: String })
+  formId?: string;
+
+  @Prop({ type: String })
+  formName?: string;
+
+  @Prop({ type: Object })
+  metaRawData?: Record<string, any>;
 }
 
 export const LeadSchema = SchemaFactory.createForClass(Lead);
