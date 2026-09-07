@@ -1,5 +1,5 @@
 import { Controller, Get, Post, Query, Body, Req, Headers, UnauthorizedException, HttpCode, HttpStatus, UseGuards, Res } from '@nestjs/common';
-import { Request, Response } from 'express';
+import type { Request, Response } from 'express';
 import { MetaWebhookService } from './meta-webhook.service';
 import { MetaVerificationDto, TestMetaIngestDto } from './dto/meta-webhook.dto';
 import { Public } from '../common/decorators/public.decorator';
