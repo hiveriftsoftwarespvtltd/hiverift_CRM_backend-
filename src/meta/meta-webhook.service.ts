@@ -106,47 +106,143 @@ export class MetaWebhookService {
   }
 
   /**
-   * Processes incoming Meta Webhook Payload
+  /**
+   * Processes incoming Meta Webhook Payload (Supports both Instant Form Ads & Click-to-WhatsApp Ads)
    */
   async handleWebhookPayload(payload: MetaWebhookPayload): Promise<{ success: boolean; processedCount: number }> {
-    if (!payload || payload.object !== 'page' || !Array.isArray(payload.entry)) {
-      this.logger.log(`Received non-leadgen or unhandled Meta event object: ${payload?.object || 'unknown'}`);
+    if (!payload || !Array.isArray(payload.entry)) {
+      this.logger.log(`Received empty or unhandled Meta event object: ${payload?.object || 'unknown'}`);
       return { success: true, processedCount: 0 };
     }
 
     let processedCount = 0;
 
-    for (const entry of payload.entry) {
-      if (!Array.isArray(entry.changes)) continue;
+    // 1. Handle Meta Instant Form Lead Ads (object === 'page')
+    if (payload.object === 'page') {
+      for (const entry of payload.entry) {
+        if (!Array.isArray(entry.changes)) continue;
 
-      for (const change of entry.changes) {
-        if (change.field !== 'leadgen' || !change.value) continue;
+        for (const change of entry.changes) {
+          if (change.field !== 'leadgen' || !change.value) continue;
 
-        const { leadgen_id, page_id, form_id, ad_id, adgroup_id, adset_id, campaign_id } = change.value;
+          const { leadgen_id, page_id, form_id, ad_id, adgroup_id, adset_id, campaign_id } = change.value;
 
-        if (!leadgen_id) {
-          this.logger.warn('Received leadgen change event without leadgen_id');
-          continue;
+          if (!leadgen_id) {
+            this.logger.warn('Received leadgen change event without leadgen_id');
+            continue;
+          }
+
+          this.logger.log(`Processing Meta Instant Form Lead Event: leadgen_id=${leadgen_id}, page_id=${page_id || 'N/A'}, form_id=${form_id || 'N/A'}`);
+
+          // Async lead processing
+          this.processLeadgenId(leadgen_id, {
+            page_id,
+            form_id,
+            ad_id,
+            adset_id: adset_id || adgroup_id,
+            campaign_id,
+          }).catch((err) => {
+            this.logger.error(`Error in async lead processing for leadgen_id=${leadgen_id}: ${err.message}`);
+          });
+
+          processedCount++;
         }
+      }
+    }
 
-        this.logger.log(`Processing Meta Lead Event: leadgen_id=${leadgen_id}, page_id=${page_id || 'N/A'}, form_id=${form_id || 'N/A'}`);
+    // 2. Handle Click-to-WhatsApp Ads & WhatsApp Business Account Messages (object === 'whatsapp_business_account')
+    if (payload.object === 'whatsapp_business_account') {
+      for (const entry of payload.entry) {
+        if (!Array.isArray(entry.changes)) continue;
 
-        // Async lead processing
-        this.processLeadgenId(leadgen_id, {
-          page_id,
-          form_id,
-          ad_id,
-          adset_id: adset_id || adgroup_id,
-          campaign_id,
-        }).catch((err) => {
-          this.logger.error(`Error in async lead processing for leadgen_id=${leadgen_id}: ${err.message}`);
-        });
+        for (const change of entry.changes) {
+          if (change.field !== 'messages' || !change.value) continue;
 
-        processedCount++;
+          const val = change.value;
+          const contacts = Array.isArray(val.contacts) ? val.contacts : [];
+          const messages = Array.isArray(val.messages) ? val.messages : [];
+
+          for (let i = 0; i < messages.length; i++) {
+            const msg = messages[i];
+            const contact = contacts[i] || contacts[0] || {};
+
+            this.processWhatsAppMessage(contact, msg).catch((err) => {
+              this.logger.error(`Error processing WhatsApp Lead message: ${err.message}`);
+            });
+
+            processedCount++;
+          }
+        }
       }
     }
 
     return { success: true, processedCount };
+  }
+
+  /**
+   * Processes incoming WhatsApp Business / Click-to-WhatsApp Ad Message Event
+   */
+  async processWhatsAppMessage(contact: any, message: any): Promise<LeadDocument | null> {
+    const rawFrom = message?.from || contact?.wa_id || '';
+    const cleanPhone = sanitizePhone(rawFrom);
+    const finalPhone = cleanPhone && cleanPhone.length === 10 ? cleanPhone : (rawFrom ? String(rawFrom).slice(-10) : '');
+
+    if (!finalPhone || finalPhone === '0000000000') {
+      this.logger.warn('WhatsApp lead event received without valid phone number');
+      return null;
+    }
+
+    const customerName = contact?.profile?.name || 'WhatsApp Lead';
+    const msgText = message?.text?.body || message?.caption || '';
+    const referral = message?.referral || {};
+    const adHeadline = referral.headline || referral.body || '';
+
+    const requirementText = `WhatsApp Inquiry: "${msgText}"${adHeadline ? ` | Ad: ${adHeadline}` : ''}`;
+
+    // Check existing lead by phone/whatsapp
+    const phoneRegex = new RegExp(finalPhone);
+    const existing = await this.leadModel.findOne({
+      $or: [{ phone: { $regex: phoneRegex } }, { whatsapp: { $regex: phoneRegex } }]
+    });
+
+    if (existing) {
+      this.logger.log(`Existing lead ${existing.leadId} sent a new WhatsApp message. Updating requirement.`);
+      existing.requirement = `${existing.requirement ? existing.requirement + ' | ' : ''}${requirementText}`;
+      return await existing.save();
+    }
+
+    const leadId = await this.generateLeadId();
+    const newLead = new this.leadModel({
+      leadId,
+      name: customerName,
+      phone: finalPhone,
+      whatsapp: finalPhone,
+      requirement: requirementText,
+      source: LeadSource.WHATSAPP,
+      status: LeadStatus.NEW,
+      platform: 'WHATSAPP_AD',
+      adId: referral.source_id || '',
+    });
+
+    const saved = await newLead.save();
+    this.logger.log(`Created new CRM Lead from WhatsApp Ad Message: ${saved.leadId} (${saved.name} - ${finalPhone})`);
+
+    // Notify Admins
+    try {
+      const admins = await this.userModel.find({ role: { $in: ['admin', 'management', 'superadmin', 'super_admin'] } }, { _id: 1 }).lean();
+      for (const admin of admins) {
+        await this.notificationsService.create({
+          userId: admin._id.toString(),
+          title: `💬 New WhatsApp Lead: ${saved.name}`,
+          message: `A new lead messaged via WhatsApp Ad (${finalPhone}): "${msgText}"`,
+          type: 'lead_assigned',
+        });
+      }
+    } catch (err: any) {
+      this.logger.error(`Failed to send WhatsApp lead notification: ${err.message}`);
+    }
+
+    return saved;
   }
 
   /**
