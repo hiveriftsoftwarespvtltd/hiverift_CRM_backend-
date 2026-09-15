@@ -21,6 +21,7 @@ import { SeedModule } from './seed/seed.module';
 import { InvoicesModule } from './invoices/invoices.module';
 import { MonitoringModule } from './monitoring/monitoring.module';
 import { MetaModule } from './meta/meta.module';
+import { SettingsModule } from './settings/settings.module';
 
 @Module({
   imports: [
@@ -61,6 +62,7 @@ import { MetaModule } from './meta/meta.module';
     InvoicesModule,
     MonitoringModule,
     MetaModule,
+    SettingsModule,
   ],
 })
 export class AppModule {}

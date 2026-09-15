@@ -80,7 +80,7 @@ export class RenewalsService {
     if (!renewal) throw new NotFoundException('Renewal not found');
     return renewal;
   }
-
+  
   async update(id: string, dto: any): Promise<RenewalDocument> {
     const payload = { ...dto };
     if (dto.client) payload.client = new Types.ObjectId(dto.client);
