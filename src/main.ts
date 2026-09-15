@@ -19,15 +19,23 @@ async function bootstrap() {
   app.use(cookieParser());
 
   // CORS
-  const allowedOrigins = process.env.FRONTEND_URL
-    ? [process.env.FRONTEND_URL, 'http://localhost:5173', 'http://localhost:3000', 'https://onboarding.hiverift.com', 'https://crm.hiverift.com', 'https://hiveriftdesk.online']
-    : true;
-
   app.enableCors({
-    origin: allowedOrigins,
+    origin: (origin, callback) => {
+      if (!origin) return callback(null, true);
+      if (
+        // origin.startsWith('http://localhost:') ||
+        // origin.startsWith('http://127.0.0.1:') ||
+        origin.includes('hiveriftdesk.online') ||
+        origin.includes('hiverift.com') ||
+        origin.includes('onboarding.hiverift.com')
+      ) {
+        return callback(null, true);
+      }
+      return callback(null, true);
+    },
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
-    allowedHeaders: ['Content-Type', 'Authorization'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'X-Requested-With', 'Accept'],
   });
 
   // Rate Limiting
@@ -60,6 +68,7 @@ async function bootstrap() {
   const port = process.env.PORT || 5000;
   await app.listen(port);
   console.log(`🚀 HiveRift CRM Backend running on port ${port}`);
-  console.log(`📡 API: http://localhost:${port}/api/v1`);
+  // console.log(`📡 API Base Endpoint: http://localhost:${port}/api/v1 (Meta Incoming Webhook Active)`);
+  console.log(`📡 API Base Endpoint: https://hiveriftdesk.online/hiveriftCRM-backend/api/v1 (Meta Incoming Webhook Active)`);
 }
 bootstrap();

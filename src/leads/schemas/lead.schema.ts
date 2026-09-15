@@ -73,6 +73,34 @@ class Note {
 }
 const NoteSchema = SchemaFactory.createForClass(Note);
 
+@Schema({ _id: false })
+class ChatMessage {
+  @Prop({ type: Types.ObjectId, auto: true })
+  _id: Types.ObjectId;
+
+  @Prop()
+  whatsappMessageId?: string;
+
+  @Prop({ type: String, enum: ['incoming', 'outgoing'], default: 'incoming' })
+  direction: string;
+
+  @Prop({ type: String, enum: ['customer', 'agent', 'system'], default: 'customer' })
+  senderType: string;
+
+  @Prop({ required: true })
+  message: string;
+
+  @Prop()
+  phone?: string;
+
+  @Prop({ type: String, enum: ['sending', 'sent', 'delivered', 'read', 'failed'], default: 'sent' })
+  status: string;
+
+  @Prop({ default: Date.now })
+  createdAt: Date;
+}
+const ChatMessageSchema = SchemaFactory.createForClass(ChatMessage);
+
 @Schema({ timestamps: true })
 export class Lead {
   @Prop({ unique: true })
@@ -137,6 +165,9 @@ export class Lead {
 
   @Prop({ type: [NoteSchema], default: [] })
   notes: Note[];
+
+  @Prop({ type: [ChatMessageSchema], default: [] })
+  messages: ChatMessage[];
 
   @Prop({ default: false })
   isConverted: boolean;

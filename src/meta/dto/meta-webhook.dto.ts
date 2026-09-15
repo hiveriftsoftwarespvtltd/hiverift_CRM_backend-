@@ -34,3 +34,19 @@ export class TestMetaIngestDto {
   @IsString()
   campaign_id?: string;
 }
+
+export class SendWhatsAppMessageDto {
+  @IsString()
+  phone: string;
+
+  @IsString()
+  message: string;
+
+  @IsOptional()
+  @IsString()
+  leadId?: string;
+
+  @IsOptional()
+  @IsString()
+  conversation_id?: string;
+}

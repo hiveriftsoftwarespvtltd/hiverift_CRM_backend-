@@ -151,20 +151,33 @@ export class MetaWebhookService {
     }
 
     // 2. Handle Click-to-WhatsApp Ads & WhatsApp Business Account Messages (object === 'whatsapp_business_account')
-    if (payload.object === 'whatsapp_business_account') {
-      for (const entry of payload.entry) {
-        if (!Array.isArray(entry.changes)) continue;
+    // 2. Handle Click-to-WhatsApp Ads & WhatsApp Business Account Messages
+    for (const entry of payload.entry || []) {
+      if (!Array.isArray(entry.changes)) continue;
 
-        for (const change of entry.changes) {
-          if (change.field !== 'messages' || !change.value) continue;
-
+      for (const change of entry.changes) {
+        if (change.field === 'messages' && change.value) {
           const val = change.value;
           const contacts = Array.isArray(val.contacts) ? val.contacts : [];
           const messages = Array.isArray(val.messages) ? val.messages : [];
+          const statuses = Array.isArray(val.statuses) ? val.statuses : [];
 
+          // Process Status Callbacks (delivered, read, failed)
+          for (const st of statuses) {
+            const wamid = st.id;
+            const statusName = st.status;
+            if (wamid && statusName) {
+              await this.leadModel.updateOne(
+                { 'messages.whatsappMessageId': wamid },
+                { $set: { 'messages.$.status': statusName } },
+              );
+            }
+          }
+
+          // Process Incoming Messages
           for (let i = 0; i < messages.length; i++) {
             const msg = messages[i];
-            const contact = contacts[i] || contacts[0] || {};
+            const contact = contacts.find((ct: any) => ct.wa_id === msg.from) || contacts[i] || contacts[0] || {};
 
             this.processWhatsAppMessage(contact, msg).catch((err) => {
               this.logger.error(`Error processing WhatsApp Lead message: ${err.message}`);
@@ -192,12 +205,33 @@ export class MetaWebhookService {
       return null;
     }
 
-    const customerName = contact?.profile?.name || 'WhatsApp Lead';
-    const msgText = message?.text?.body || message?.caption || '';
+    const rawProfileName = contact?.profile?.name || '';
+    const cleanProfileName = rawProfileName.replace(/^[~\s\-_]+/, '').trim();
+    const customerName = cleanProfileName || 'WhatsApp Lead';
+
+    const msgText =
+      message?.text?.body ||
+      message?.caption ||
+      message?.button?.text ||
+      message?.interactive?.button_reply?.title ||
+      message?.interactive?.list_reply?.title ||
+      (message?.type ? `[${message.type.toUpperCase()}]` : '') ||
+      'New Message';
     const referral = message?.referral || {};
     const adHeadline = referral.headline || referral.body || '';
+    const wamid = message?.id;
 
     const requirementText = `WhatsApp Inquiry: "${msgText}"${adHeadline ? ` | Ad: ${adHeadline}` : ''}`;
+
+    const chatMsgObj = {
+      whatsappMessageId: wamid,
+      direction: 'incoming',
+      senderType: 'customer',
+      message: msgText || 'New Message',
+      phone: finalPhone,
+      status: 'sent',
+      createdAt: new Date(),
+    };
 
     // Check existing lead by phone/whatsapp
     const phoneRegex = new RegExp(finalPhone);
@@ -206,8 +240,10 @@ export class MetaWebhookService {
     });
 
     if (existing) {
-      this.logger.log(`Existing lead ${existing.leadId} sent a new WhatsApp message. Updating requirement.`);
+      this.logger.log(`Existing lead ${existing.leadId} sent a new WhatsApp message.`);
       existing.requirement = `${existing.requirement ? existing.requirement + ' | ' : ''}${requirementText}`;
+      if (!existing.messages) existing.messages = [];
+      existing.messages.push(chatMsgObj as any);
       return await existing.save();
     }
 
@@ -222,6 +258,7 @@ export class MetaWebhookService {
       status: LeadStatus.NEW,
       platform: 'WHATSAPP_AD',
       adId: referral.source_id || '',
+      messages: [chatMsgObj],
     });
 
     const saved = await newLead.save();

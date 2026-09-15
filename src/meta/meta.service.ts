@@ -78,4 +78,65 @@ export class MetaService {
 
     return null;
   }
+
+  /**
+   * Sends a WhatsApp text message to a customer via Meta WhatsApp Cloud API
+   * POST /{version}/{phone_number_id}/messages
+   */
+  async sendWhatsAppTextMessage(phone: string, text: string): Promise<{ success: boolean; whatsappMessageId?: string; error?: string }> {
+    const pageAccessToken = this.configService.get<string>('META_PAGE_ACCESS_TOKEN');
+    const phoneNumberId = this.configService.get<string>('META_PHONE_NUMBER_ID') || '1320674383284386';
+    const apiVersion = this.configService.get<string>('META_GRAPH_API_VERSION') || META_CONSTANTS.DEFAULT_GRAPH_API_VERSION;
+
+    if (!pageAccessToken) {
+      this.logger.error('META_PAGE_ACCESS_TOKEN is missing in environment variables');
+      return { success: false, error: 'META_PAGE_ACCESS_TOKEN is not configured on server' };
+    }
+
+    // Format phone number (remove +, spaces, dashes, and ensure country code 91 for 10-digit numbers)
+    let cleanPhone = phone.replace(/\D/g, '');
+    if (cleanPhone.length === 10) {
+      cleanPhone = `91${cleanPhone}`;
+    } else if (cleanPhone.length === 11 && cleanPhone.startsWith('0')) {
+      cleanPhone = `91${cleanPhone.slice(1)}`;
+    }
+
+    const url = `${META_CONSTANTS.GRAPH_API_BASE_URL}/${apiVersion}/${phoneNumberId}/messages`;
+
+    const payload = {
+      messaging_product: 'whatsapp',
+      recipient_type: 'individual',
+      to: cleanPhone,
+      type: 'text',
+      text: { body: text },
+    };
+
+    try {
+      this.logger.log(`Sending WhatsApp message to ${cleanPhone} via Cloud API`);
+
+      const response = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${pageAccessToken}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+
+      const responseData = await response.json().catch(() => ({}));
+
+      if (!response.ok) {
+        const errorMsg = responseData?.error?.message || `HTTP ${response.status} ${response.statusText}`;
+        this.logger.error(`WhatsApp Cloud API Error for ${cleanPhone}: ${errorMsg}`);
+        return { success: false, error: errorMsg };
+      }
+
+      const wamid = responseData?.messages?.[0]?.id || `wamid.simulated.${Date.now()}`;
+      this.logger.log(`WhatsApp message delivered to ${cleanPhone}. Message ID: ${wamid}`);
+      return { success: true, whatsappMessageId: wamid };
+    } catch (err: any) {
+      this.logger.error(`Failed to send WhatsApp message to ${cleanPhone}: ${err?.message || err}`);
+      return { success: false, error: err?.message || 'Network request failed' };
+    }
+  }
 }

@@ -1,7 +1,11 @@
-import { Controller, Get, Post, Query, Body, Req, Headers, UnauthorizedException, HttpCode, HttpStatus, UseGuards, Res } from '@nestjs/common';
+import { Controller, Get, Post, Query, Body, Req, Headers, UnauthorizedException, HttpCode, HttpStatus, UseGuards, Res, BadRequestException } from '@nestjs/common';
 import type { Request, Response } from 'express';
+import { InjectModel } from '@nestjs/mongoose';
+import { Model, Types } from 'mongoose';
 import { MetaWebhookService } from './meta-webhook.service';
-import { MetaVerificationDto, TestMetaIngestDto } from './dto/meta-webhook.dto';
+import { MetaService } from './meta.service';
+import { MetaVerificationDto, TestMetaIngestDto, SendWhatsAppMessageDto } from './dto/meta-webhook.dto';
+import { Lead, LeadDocument } from '../leads/schemas/lead.schema';
 import { Public } from '../common/decorators/public.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
@@ -9,7 +13,11 @@ import { Roles } from '../common/decorators/roles.decorator';
 
 @Controller('meta')
 export class MetaController {
-  constructor(private readonly metaWebhookService: MetaWebhookService) {}
+  constructor(
+    private readonly metaWebhookService: MetaWebhookService,
+    private readonly metaService: MetaService,
+    @InjectModel(Lead.name) private readonly leadModel: Model<LeadDocument>,
+  ) {}
 
   /**
    * GET /api/v1/meta/webhook
@@ -36,7 +44,7 @@ export class MetaController {
 
   /**
    * POST /api/v1/meta/webhook
-   * Meta Webhook Ingestion Endpoint for Lead Ads Events
+   * Meta Webhook Ingestion Endpoint for Lead Ads & WhatsApp Events
    */
   @Post('webhook')
   @Public()
@@ -59,6 +67,112 @@ export class MetaController {
 
     // 3. Return HTTP 200 { success: true } quickly
     return { success: true };
+  }
+
+  /**
+   * POST /api/v1/meta/whatsapp/send-message
+   * CRM Agent Reply Endpoint sending message via Meta WhatsApp Cloud API
+   */
+  @Post('whatsapp/send-message')
+  @UseGuards(JwtAuthGuard)
+  async sendWhatsAppMessage(@Body() dto: SendWhatsAppMessageDto) {
+    if (!dto.phone || !dto.message) {
+      throw new BadRequestException('Phone number and message text are required');
+    }
+
+    // 1. Call Meta WhatsApp Cloud API via MetaService
+    const sendResult = await this.metaService.sendWhatsAppTextMessage(dto.phone, dto.message);
+
+    const targetLeadId = dto.leadId || dto.conversation_id;
+    let targetLead: LeadDocument | null = null;
+
+    if (targetLeadId) {
+      const searchConds: any[] = [{ leadId: targetLeadId }];
+      if (Types.ObjectId.isValid(targetLeadId)) {
+        searchConds.push({ _id: targetLeadId });
+      }
+      targetLead = await this.leadModel.findOne({ $or: searchConds });
+    }
+
+    if (!targetLead && dto.phone) {
+      const cleanPhone = dto.phone.replace(/\D/g, '').slice(-10);
+      targetLead = await this.leadModel.findOne({
+        $or: [
+          { phone: new RegExp(cleanPhone) },
+          { whatsapp: new RegExp(cleanPhone) },
+        ],
+      });
+    }
+
+    const chatMsgObj = {
+      whatsappMessageId: sendResult.whatsappMessageId,
+      direction: 'outgoing',
+      senderType: 'agent',
+      message: dto.message,
+      phone: dto.phone,
+      status: sendResult.success ? 'sent' : 'failed',
+      createdAt: new Date(),
+    };
+
+    if (targetLead) {
+      if (!targetLead.messages) targetLead.messages = [];
+      targetLead.messages.push(chatMsgObj as any);
+      await targetLead.save();
+    }
+
+    if (!sendResult.success) {
+      return {
+        success: false,
+        message: sendResult.error || 'Failed to send WhatsApp message',
+        data: chatMsgObj,
+      };
+    }
+
+    return {
+      success: true,
+      message: 'WhatsApp message sent successfully',
+      data: chatMsgObj,
+    };
+  }
+
+  /**
+   * GET /api/v1/meta/whatsapp/conversations
+   * Fetch all WhatsApp leads & conversation threads for the CRM WhatsApp Inbox
+   */
+  @Get('whatsapp/conversations')
+  @UseGuards(JwtAuthGuard)
+  async getWhatsAppConversations() {
+    const leads = await this.leadModel
+      .find({
+        name: { $nin: ['-', '--', '', 'null', 'undefined'], $exists: true },
+        $or: [
+          { phone: { $exists: true, $ne: '', $nin: ['0000000000', '0'] } },
+          { whatsapp: { $exists: true, $ne: '', $nin: ['0000000000', '0'] } },
+        ],
+      })
+      .sort({ updatedAt: -1 })
+      .limit(500)
+      .lean()
+      .exec();
+
+    // Sanitize lead names (remove leading ~ or - or special symbols from WhatsApp profile names)
+    const sanitizedLeads = leads.map((lead: any) => {
+      let cleanName = (lead.name || '').replace(/^[~\s\-_]+/, '').trim();
+      if (!cleanName || cleanName === '-' || cleanName === '--' || cleanName === 'null') {
+        const ph = lead.whatsapp || lead.phone;
+        cleanName = ph ? `Lead (${ph})` : lead.leadId || 'Lead';
+      }
+      return {
+        ...lead,
+        name: cleanName,
+        rawName: lead.name,
+      };
+    });
+
+    return {
+      success: true,
+      data: sanitizedLeads,
+    };
   }
 
   /**
