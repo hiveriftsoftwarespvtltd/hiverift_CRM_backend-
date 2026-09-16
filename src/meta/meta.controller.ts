@@ -75,13 +75,18 @@ export class MetaController {
    */
   @Post('whatsapp/send-message')
   @UseGuards(JwtAuthGuard)
-  async sendWhatsAppMessage(@Body() dto: SendWhatsAppMessageDto) {
+  async sendWhatsAppMessage(@Req() req: any, @Body() dto: SendWhatsAppMessageDto) {
     if (!dto.phone || !dto.message) {
       throw new BadRequestException('Phone number and message text are required');
     }
 
-    // 1. Call Meta WhatsApp Cloud API via MetaService
-    const sendResult = await this.metaService.sendWhatsAppTextMessage(dto.phone, dto.message);
+    const user = req.user;
+    const userRole = (user?.role || '').toLowerCase();
+    const isAdminOrManagement =
+      userRole === 'admin' ||
+      userRole === 'management' ||
+      userRole === 'superadmin' ||
+      userRole === 'super_admin';
 
     const targetLeadId = dto.leadId || dto.conversation_id;
     let targetLead: LeadDocument | null = null;
@@ -103,6 +108,21 @@ export class MetaController {
         ],
       });
     }
+
+    // Security role check: Sales users can only send messages to leads assigned to them or created by them
+    if (!isAdminOrManagement && targetLead && user) {
+      const uId = user._id ? user._id.toString() : user.id;
+      const assignedStr = targetLead.assignedTo ? targetLead.assignedTo.toString() : '';
+      const createdStr = targetLead.createdBy ? targetLead.createdBy.toString() : '';
+      const isOwnerOrAssigned = assignedStr === uId || createdStr === uId;
+
+      if (!isOwnerOrAssigned) {
+        throw new UnauthorizedException('You do not have permission to send messages to this lead.');
+      }
+    }
+
+    // 1. Call Meta WhatsApp Cloud API via MetaService
+    const sendResult = await this.metaService.sendWhatsAppTextMessage(dto.phone, dto.message);
 
     const chatMsgObj = {
       whatsappMessageId: sendResult.whatsappMessageId,
@@ -137,19 +157,58 @@ export class MetaController {
 
   /**
    * GET /api/v1/meta/whatsapp/conversations
-   * Fetch all WhatsApp leads & conversation threads for the CRM WhatsApp Inbox
+   * Fetch WhatsApp leads & conversation threads for the CRM WhatsApp Inbox.
+   * - Super Admin / Admin / Management see ALL lead conversations.
+   * - Sales Executives see ONLY their assigned or created leads.
    */
   @Get('whatsapp/conversations')
   @UseGuards(JwtAuthGuard)
-  async getWhatsAppConversations() {
-    const leads = await this.leadModel
-      .find({
-        name: { $nin: ['-', '--', '', 'null', 'undefined'], $exists: true },
+  async getWhatsAppConversations(@Req() req: any) {
+    const user = req.user;
+    const userRole = (user?.role || '').toLowerCase().trim();
+    const isAdminOrManagement =
+      userRole === 'admin' ||
+      userRole === 'management' ||
+      userRole === 'superadmin' ||
+      userRole === 'super_admin';
+
+    const conditions: any[] = [
+      { name: { $nin: ['-', '--', '', 'null', 'undefined'], $exists: true } },
+      {
         $or: [
           { phone: { $exists: true, $ne: '', $nin: ['0000000000', '0'] } },
           { whatsapp: { $exists: true, $ne: '', $nin: ['0000000000', '0'] } },
         ],
-      })
+      },
+    ];
+
+    // Role-based Access Control:
+    // Admin, Super Admin, Management see ALL conversations.
+    // Sales users / Executives see ONLY leads assigned to them or created by them.
+    if (!isAdminOrManagement && user) {
+      const uId = user._id ? user._id.toString() : (user.id ? user.id.toString() : '');
+      const userObjId = Types.ObjectId.isValid(uId) ? new Types.ObjectId(uId) : null;
+
+      const userOwnershipConds: any[] = [];
+      if (userObjId) {
+        userOwnershipConds.push({ assignedTo: userObjId });
+        userOwnershipConds.push({ createdBy: userObjId });
+      }
+      if (uId) {
+        userOwnershipConds.push({ assignedTo: uId });
+        userOwnershipConds.push({ createdBy: uId });
+      }
+
+      if (userOwnershipConds.length > 0) {
+        conditions.push({ $or: userOwnershipConds });
+      }
+    }
+
+    const filter = { $and: conditions };
+
+    const leads = await this.leadModel
+      .find(filter)
+      .populate('assignedTo', 'name email role phone')
       .sort({ updatedAt: -1 })
       .limit(500)
       .lean()

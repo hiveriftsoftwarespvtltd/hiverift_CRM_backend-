@@ -23,8 +23,8 @@ async function bootstrap() {
     origin: (origin, callback) => {
       if (!origin) return callback(null, true);
       if (
-        // origin.startsWith('http://localhost:') ||
-        // origin.startsWith('http://127.0.0.1:') ||
+        origin.startsWith('http://localhost:') ||
+        origin.startsWith('http://127.0.0.1:') ||
         origin.includes('hiveriftdesk.online') ||
         origin.includes('hiverift.com') ||
         origin.includes('onboarding.hiverift.com')
@@ -68,7 +68,7 @@ async function bootstrap() {
   const port = process.env.PORT || 5000;
   await app.listen(port);
   console.log(`🚀 HiveRift CRM Backend running on port ${port}`);
-  // console.log(`📡 API Base Endpoint: http://localhost:${port}/api/v1 (Meta Incoming Webhook Active)`);
-  console.log(`📡 API Base Endpoint: https://hiveriftdesk.online/hiveriftCRM-backend/api/v1 (Meta Incoming Webhook Active)`);
+  console.log(`📡 API Base Endpoint: http://localhost:${port}/api/v1 (Meta Incoming Webhook Active)`);
+  // console.log(`📡 API Base Endpoint: https://hiveriftdesk.online/hiveriftCRM-backend/api/v1 (Meta Incoming Webhook Active)`);
 }
 bootstrap();
