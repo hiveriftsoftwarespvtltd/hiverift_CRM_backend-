@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Query, Body, Req, Headers, UnauthorizedException, HttpCode, HttpStatus, UseGuards, Res, BadRequestException } from '@nestjs/common';
+import { Controller, Get, Post, Delete, Query, Body, Req, Headers, UnauthorizedException, HttpCode, HttpStatus, UseGuards, Res, BadRequestException, Param } from '@nestjs/common';
 import type { Request, Response } from 'express';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -10,6 +10,16 @@ import { Public } from '../common/decorators/public.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+
+function isImageLink(str?: string): boolean {
+  if (!str) return false;
+  const s = str.trim().toLowerCase();
+  return (
+    s.startsWith('data:image/') ||
+    /\.(jpeg|jpg|gif|png|webp|svg)(\?.*)?$/i.test(s) ||
+    (s.startsWith('http') && (s.includes('/images/') || s.includes('/img/') || s.includes('/uploads/')))
+  );
+}
 
 @Controller('meta')
 export class MetaController {
@@ -70,14 +80,50 @@ export class MetaController {
   }
 
   /**
+   * GET /api/v1/meta/whatsapp/media/:mediaId
+   * Streams WhatsApp media binary from Meta Graph API
+   */
+  @Get('whatsapp/media/:mediaId')
+  @Public()
+  async getWhatsAppMedia(@Param('mediaId') mediaId: string, @Res() res: Response) {
+    if (!mediaId) {
+      return res.status(HttpStatus.BAD_REQUEST).send('Media ID is required');
+    }
+    const result = await this.metaService.getWhatsAppMedia(mediaId);
+    if (!result) {
+      const placeholderSvg = `<svg xmlns="http://www.w3.org/2000/svg" width="400" height="250" viewBox="0 0 400 250">
+        <rect width="100%" height="100%" fill="#0B4D3C"/>
+        <circle cx="200" cy="100" r="36" fill="#10B981" opacity="0.2"/>
+        <path d="M185 85h30v20h-30zM175 115l20-20 15 15 20-20 15 15v20h-70z" fill="#10B981"/>
+        <text x="50%" y="165" font-family="sans-serif" font-size="15" font-weight="bold" fill="#FFFFFF" text-anchor="middle">WhatsApp Photo Attachment</text>
+        <text x="50%" y="190" font-family="sans-serif" font-size="12" fill="#6EE7B7" text-anchor="middle">Click to View Attachment</text>
+      </svg>`;
+      res.setHeader('Content-Type', 'image/svg+xml');
+      res.setHeader('Cache-Control', 'public, max-age=60');
+      res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+      res.setHeader('Access-Control-Allow-Origin', '*');
+      return res.status(HttpStatus.OK).send(placeholderSvg);
+    }
+    res.setHeader('Content-Type', result.mimeType || 'image/jpeg');
+    res.setHeader('Cache-Control', 'public, max-age=31536000');
+    res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    return res.status(HttpStatus.OK).send(result.buffer);
+  }
+
+  /**
    * POST /api/v1/meta/whatsapp/send-message
-   * CRM Agent Reply Endpoint sending message via Meta WhatsApp Cloud API
+   * CRM Agent Reply Endpoint sending text/media message via Meta WhatsApp Cloud API
    */
   @Post('whatsapp/send-message')
   @UseGuards(JwtAuthGuard)
   async sendWhatsAppMessage(@Req() req: any, @Body() dto: SendWhatsAppMessageDto) {
-    if (!dto.phone || !dto.message) {
-      throw new BadRequestException('Phone number and message text are required');
+    const rawMessage = (dto.message || '').trim();
+    const mediaUrl = (dto.mediaUrl || '').trim() || (isImageLink(rawMessage) ? rawMessage : '');
+    const isImage = !!mediaUrl || dto.mediaType === 'image';
+
+    if (!dto.phone || (!rawMessage && !mediaUrl)) {
+      throw new BadRequestException('Phone number and message text or image URL are required');
     }
 
     const user = req.user;
@@ -122,13 +168,39 @@ export class MetaController {
     }
 
     // 1. Call Meta WhatsApp Cloud API via MetaService
-    const sendResult = await this.metaService.sendWhatsAppTextMessage(dto.phone, dto.message);
+    let sendResult: { success: boolean; whatsappMessageId?: string; mediaId?: string; error?: string };
+
+    const mediaUrlLower = mediaUrl.toLowerCase();
+    const isDoc = dto.mediaType === 'document' || mediaUrlLower.includes('application/pdf') || mediaUrlLower.includes('.pdf') || (dto.fileName && dto.fileName.toLowerCase().endsWith('.pdf'));
+    const isMedia = !!mediaUrl || dto.mediaType === 'image' || isDoc;
+    const computedMediaType = isDoc ? 'document' : (dto.mediaType || 'image');
+
+    if (isMedia) {
+      const captionText = rawMessage && rawMessage !== mediaUrl && !rawMessage.startsWith('[') ? rawMessage : '';
+      sendResult = await this.metaService.sendWhatsAppMediaMessage(
+        dto.phone,
+        mediaUrl,
+        captionText,
+        computedMediaType,
+        dto.fileName,
+      );
+    } else {
+      sendResult = await this.metaService.sendWhatsAppTextMessage(dto.phone, rawMessage);
+    }
+
+    const finalMediaUrl = sendResult.mediaId
+      ? `/api/v1/meta/whatsapp/media/${sendResult.mediaId}`
+      : (mediaUrl && !mediaUrl.startsWith('data:') ? mediaUrl : undefined);
 
     const chatMsgObj = {
       whatsappMessageId: sendResult.whatsappMessageId,
       direction: 'outgoing',
       senderType: 'agent',
-      message: dto.message,
+      message: (rawMessage && !rawMessage.startsWith('[')) ? rawMessage : (isDoc ? `[📄 ${dto.fileName || 'Document.pdf'}]` : '[📷 Image]'),
+      mediaUrl: finalMediaUrl,
+      mediaType: isMedia ? computedMediaType : undefined,
+      mediaId: sendResult.mediaId || undefined,
+      fileName: dto.fileName || undefined,
       phone: dto.phone,
       status: sendResult.success ? 'sent' : 'failed',
       createdAt: new Date(),
@@ -253,6 +325,86 @@ export class MetaController {
       success: true,
       message: lead ? `Lead processed successfully (Lead ID: ${lead.leadId})` : 'Lead processing completed with null output',
       data: lead,
+    };
+  }
+
+  /**
+   * DELETE /api/v1/meta/whatsapp/messages/:leadId/:messageId
+   * Delete a single message from lead's conversation history
+   */
+  @Delete('whatsapp/messages/:leadId/:messageId')
+  @UseGuards(JwtAuthGuard)
+  async deleteWhatsAppMessage(
+    @Param('leadId') leadId: string,
+    @Param('messageId') messageId: string,
+    @Req() req: any,
+  ) {
+    if (!leadId || !messageId) {
+      throw new BadRequestException('Lead ID and Message ID are required');
+    }
+
+    const searchConds: any[] = [{ leadId }];
+    if (Types.ObjectId.isValid(leadId)) {
+      searchConds.push({ _id: leadId });
+    }
+
+    const lead = await this.leadModel.findOne({ $or: searchConds });
+    if (!lead) {
+      throw new BadRequestException('Lead not found');
+    }
+
+    if (!lead.messages || lead.messages.length === 0) {
+      return { success: true, message: 'No messages to delete' };
+    }
+
+    const originalCount = lead.messages.length;
+    lead.messages = lead.messages.filter((m: any) => {
+      const mId = m._id ? m._id.toString() : '';
+      const wamid = m.whatsappMessageId || '';
+      return mId !== messageId && wamid !== messageId;
+    });
+
+    await lead.save();
+
+    return {
+      success: true,
+      message: 'Message deleted successfully',
+      deletedCount: originalCount - lead.messages.length,
+    };
+  }
+
+  /**
+   * DELETE /api/v1/meta/whatsapp/conversations/:leadId/clear
+   * Clear all messages (bulk delete chat) for a lead
+   */
+  @Delete('whatsapp/conversations/:leadId/clear')
+  @UseGuards(JwtAuthGuard)
+  async clearWhatsAppConversation(
+    @Param('leadId') leadId: string,
+    @Req() req: any,
+  ) {
+    if (!leadId) {
+      throw new BadRequestException('Lead ID is required');
+    }
+
+    const searchConds: any[] = [{ leadId }];
+    if (Types.ObjectId.isValid(leadId)) {
+      searchConds.push({ _id: leadId });
+    }
+
+    const lead = await this.leadModel.findOne({ $or: searchConds });
+    if (!lead) {
+      throw new BadRequestException('Lead not found');
+    }
+
+    const clearedCount = lead.messages ? lead.messages.length : 0;
+    lead.messages = [];
+    await lead.save();
+
+    return {
+      success: true,
+      message: 'Conversation cleared successfully',
+      clearedCount,
     };
   }
 }

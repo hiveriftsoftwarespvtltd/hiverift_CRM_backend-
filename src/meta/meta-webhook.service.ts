@@ -209,17 +209,56 @@ export class MetaWebhookService {
     const cleanProfileName = rawProfileName.replace(/^[~\s\-_]+/, '').trim();
     const customerName = cleanProfileName || 'WhatsApp Lead';
 
-    const msgText =
+    const msgType = (message?.type || '').toLowerCase();
+    const isImage = msgType === 'image' || !!message?.image;
+    const isDoc = msgType === 'document' || !!message?.document;
+    const isVideo = msgType === 'video' || !!message?.video;
+    const isAudio = msgType === 'audio' || !!message?.audio;
+    const isSticker = msgType === 'sticker' || !!message?.sticker;
+
+    const mediaObj = message?.image || message?.document || message?.video || message?.audio || message?.sticker || (msgType ? message?.[msgType] : null);
+    const wamid = message?.id;
+
+    let mediaId = '';
+    if (typeof mediaObj === 'string') {
+      mediaId = mediaObj;
+    } else if (mediaObj && typeof mediaObj === 'object') {
+      mediaId = mediaObj.id || mediaObj.media_id || mediaObj.file_id || '';
+    }
+    if (!mediaId && (isImage || isDoc || isVideo || isAudio || isSticker)) {
+      mediaId = wamid || `media_${Date.now()}`;
+    }
+
+    const mediaType = msgType || (isImage ? 'image' : isDoc ? 'document' : 'text');
+    const fileName = (typeof mediaObj === 'object' ? mediaObj?.filename : undefined) || (isDoc ? 'Document.pdf' : undefined);
+    const caption = (typeof mediaObj === 'object' ? mediaObj?.caption : undefined) || message?.caption || message?.text?.body || '';
+
+    let msgText =
       message?.text?.body ||
-      message?.caption ||
+      caption ||
       message?.button?.text ||
       message?.interactive?.button_reply?.title ||
       message?.interactive?.list_reply?.title ||
-      (message?.type ? `[${message.type.toUpperCase()}]` : '') ||
-      'New Message';
+      '';
+
+    if (!msgText || msgText === 'New Message' || msgText === '[IMAGE]') {
+      if (isImage) msgText = '[📷 Image]';
+      else if (isDoc) msgText = `[📄 ${fileName || 'Document'}]`;
+      else if (msgType) msgText = `[${msgType.toUpperCase()}]`;
+      else msgText = 'New Message';
+    }
+
+    const mediaUrl = mediaId ? `/api/v1/meta/whatsapp/media/${mediaId}` : undefined;
+
+    // Async pre-fetch incoming media in background so disk cache is populated immediately
+    if (mediaId && !mediaId.startsWith('wamid.')) {
+      this.metaService.getWhatsAppMedia(mediaId).catch((err) => {
+        this.logger.warn(`Background media pre-fetch warning for mediaId ${mediaId}: ${err?.message}`);
+      });
+    }
+
     const referral = message?.referral || {};
     const adHeadline = referral.headline || referral.body || '';
-    const wamid = message?.id;
 
     const requirementText = `WhatsApp Inquiry: "${msgText}"${adHeadline ? ` | Ad: ${adHeadline}` : ''}`;
 
@@ -227,7 +266,11 @@ export class MetaWebhookService {
       whatsappMessageId: wamid,
       direction: 'incoming',
       senderType: 'customer',
-      message: msgText || 'New Message',
+      message: msgText,
+      mediaUrl,
+      mediaType,
+      mediaId: mediaId || undefined,
+      fileName: fileName || undefined,
       phone: finalPhone,
       status: 'sent',
       createdAt: new Date(),

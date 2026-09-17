@@ -39,8 +39,21 @@ export class SendWhatsAppMessageDto {
   @IsString()
   phone: string;
 
+  @IsOptional()
   @IsString()
-  message: string;
+  message?: string;
+
+  @IsOptional()
+  @IsString()
+  mediaUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  mediaType?: string;
+
+  @IsOptional()
+  @IsString()
+  fileName?: string;
 
   @IsOptional()
   @IsString()

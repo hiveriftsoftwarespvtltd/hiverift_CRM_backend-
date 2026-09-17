@@ -91,6 +91,18 @@ class ChatMessage {
   message: string;
 
   @Prop()
+  mediaUrl?: string;
+
+  @Prop()
+  mediaType?: string;
+
+  @Prop()
+  mediaId?: string;
+
+  @Prop()
+  fileName?: string;
+
+  @Prop()
   phone?: string;
 
   @Prop({ type: String, enum: ['sending', 'sent', 'delivered', 'read', 'failed'], default: 'sent' })
