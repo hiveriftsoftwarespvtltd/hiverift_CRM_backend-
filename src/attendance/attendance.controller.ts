@@ -76,19 +76,22 @@ export class AttendanceController {
   }
 
   @Put(':id/edit-time')
-  @Roles('admin')
+  @Roles('admin', 'management', 'hr')
   async editAttendance(
     @Param('id') id: string,
-    @Body() body: { checkInTime?: string; checkOutTime?: string; status?: string; notes?: string },
+    @Body() body: { checkInTime?: string; checkOutTime?: string; status?: string; notes?: string; employeeId?: string; userId?: string; date?: string },
   ) {
     const att = await this.attendanceService.editAttendance(id, body);
     return { message: 'Attendance updated successfully', data: att };
   }
 
   @Delete(':id/reset-record')
-  @Roles('admin')
-  async resetAttendanceRecord(@Param('id') id: string) {
-    await this.attendanceService.resetRecord(id);
+  @Roles('admin', 'management', 'hr')
+  async resetAttendanceRecord(
+    @Param('id') id: string,
+    @Body() body?: { employeeId?: string; date?: string },
+  ) {
+    await this.attendanceService.resetRecord(id, body?.employeeId, body?.date);
     return { message: 'Attendance record reset successfully' };
   }
 

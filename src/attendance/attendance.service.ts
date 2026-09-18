@@ -45,6 +45,48 @@ function get7PMIST(dateInput: Date | string): Date {
   }
 }
 
+/**
+ * Creates a Date object for a specific target Date at hours:minutes IST.
+ * IST is UTC+5:30 (330 minutes ahead of UTC).
+ */
+function createISTDate(baseDateInput: Date | string, hours: number, minutes: number): Date {
+  const d = new Date(baseDateInput);
+  try {
+    const formatter = new Intl.DateTimeFormat('en-US', {
+      timeZone: 'Asia/Kolkata',
+      year: 'numeric',
+      month: '2-digit',
+      day: '2-digit',
+    });
+    const parts = formatter.formatToParts(d);
+    const year = Number(parts.find(p => p.type === 'year')?.value);
+    const month = Number(parts.find(p => p.type === 'month')?.value);
+    const day = Number(parts.find(p => p.type === 'day')?.value);
+
+    const istTotalMins = hours * 60 + minutes;
+    const utcTotalMins = istTotalMins - 330;
+
+    let utcH = Math.floor(utcTotalMins / 60);
+    let utcM = utcTotalMins % 60;
+    let dayOffset = 0;
+
+    if (utcM < 0) {
+      utcM += 60;
+      utcH -= 1;
+    }
+    if (utcH < 0) {
+      utcH += 24;
+      dayOffset = -1;
+    }
+
+    return new Date(Date.UTC(year, month - 1, day + dayOffset, utcH, utcM, 0, 0));
+  } catch {
+    const date = new Date(d);
+    date.setUTCHours(hours - 5, minutes - 30, 0, 0);
+    return date;
+  }
+}
+
 @Injectable()
 export class AttendanceService implements OnModuleInit {
   constructor(
@@ -55,9 +97,11 @@ export class AttendanceService implements OnModuleInit {
 
   onModuleInit() {
     this.autoCheckoutExpiredShifts();
+    this.autoMarkAbsentExpiredShifts();
     setInterval(() => {
       this.autoCheckoutExpiredShifts();
-    }, 60000); // Auto check-out scanner runs every 60 seconds
+      this.autoMarkAbsentExpiredShifts();
+    }, 60000); // Auto check-out & Auto-absent scanner runs every 60 seconds
   }
 
   /**
@@ -118,6 +162,66 @@ export class AttendanceService implements OnModuleInit {
       }
     } catch (err) {
       console.error('Error in autoCheckoutExpiredShifts:', err);
+    }
+  }
+
+  /**
+   * Auto Mark Absent at 07:00 PM (19:00 IST):
+   * Automatically marks 'absent' for any active employee who has not checked in by 07:00 PM IST.
+   * Skips Sundays.
+   */
+  async autoMarkAbsentExpiredShifts(): Promise<void> {
+    try {
+      const now = new Date();
+      const cutoff7PM = get7PMIST(now);
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      // Only run auto-absent scanner if current time has reached or passed 07:00 PM IST
+      if (now.getTime() < cutoff7PM.getTime()) {
+        await this.attendanceModel.deleteMany({
+          date: today,
+          status: 'absent',
+          checkIn: { $exists: false },
+        });
+        return;
+      }
+
+      // Check IST day of week (0 = Sunday)
+      const istDayString = now.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'short' });
+      if (istDayString === 'Sun') {
+        return; // Skip Sunday
+      }
+
+
+      // Find all active employees (excluding Super Admin/head)
+      const activeEmployees = await this.userModel.find({
+        isActive: { $ne: false },
+        role: { $nin: ['admin', 'super_admin', 'superadmin'] },
+        email: { $ne: 'hiverift@gmail.com' },
+      }).select('_id name email role');
+
+      for (const employee of activeEmployees) {
+        // Check if attendance record exists for today
+        const existing = await this.attendanceModel.findOne({
+          employee: employee._id,
+          date: today,
+        });
+
+        if (!existing) {
+          // Create explicit Absent record for today
+          await new this.attendanceModel({
+            employee: employee._id,
+            date: today,
+            status: 'absent',
+            workingHours: 0,
+            notes: 'Auto-marked Absent (No check-in by 07:00 PM IST)',
+          }).save();
+        }
+      }
+    } catch (err) {
+      console.error('Error in autoMarkAbsentExpiredShifts:', err);
     }
   }
 
@@ -366,11 +470,36 @@ export class AttendanceService implements OnModuleInit {
   }
 
   async remove(id: string): Promise<void> {
-    await this.attendanceModel.findByIdAndDelete(id);
+    if (Types.ObjectId.isValid(id)) {
+      await this.attendanceModel.findByIdAndDelete(id);
+    }
   }
 
-  async resetRecord(id: string): Promise<void> {
-    await this.attendanceModel.findByIdAndDelete(id);
+  async resetRecord(id: string, employeeId?: string, dateStr?: string): Promise<void> {
+    if (Types.ObjectId.isValid(id)) {
+      await this.attendanceModel.findByIdAndDelete(id);
+    }
+
+    if (id.startsWith('virtual_')) {
+      const parts = id.split('_');
+      const userId = parts[2];
+      const dateMs = parts[3] ? Number(parts[3]) : Date.now();
+      const recDate = new Date(dateMs);
+      recDate.setHours(0, 0, 0, 0);
+      if (userId && Types.ObjectId.isValid(userId)) {
+        await this.attendanceModel.deleteMany({
+          employee: new Types.ObjectId(userId),
+          date: recDate,
+        });
+      }
+    } else if (employeeId && dateStr && Types.ObjectId.isValid(employeeId)) {
+      const recDate = new Date(dateStr);
+      recDate.setHours(0, 0, 0, 0);
+      await this.attendanceModel.deleteMany({
+        employee: new Types.ObjectId(employeeId),
+        date: recDate,
+      });
+    }
   }
 
   /**
@@ -378,9 +507,61 @@ export class AttendanceService implements OnModuleInit {
    */
   async editAttendance(
     id: string,
-    updateDto: { checkInTime?: string; checkOutTime?: string; status?: string; notes?: string },
+    updateDto: { checkInTime?: string; checkOutTime?: string; status?: string; notes?: string; employeeId?: string; userId?: string; date?: string },
   ): Promise<AttendanceDocument> {
-    const attendance = await this.attendanceModel.findById(id);
+    let attendance: AttendanceDocument | null = null;
+    if (Types.ObjectId.isValid(id)) {
+      attendance = await this.attendanceModel.findById(id);
+    }
+
+    const empId = updateDto.employeeId || updateDto.userId;
+    const targetDate = updateDto.date ? new Date(updateDto.date) : null;
+    if (targetDate) targetDate.setHours(0, 0, 0, 0);
+
+    if (!attendance && empId && targetDate && Types.ObjectId.isValid(empId)) {
+      attendance = await this.attendanceModel.findOne({
+        employee: new Types.ObjectId(empId),
+        date: targetDate,
+      });
+    }
+
+    if (!attendance && id.startsWith('virtual_')) {
+      const parts = id.split('_');
+      const userId = parts[2];
+      const dateMs = parts[3] ? Number(parts[3]) : Date.now();
+      const recDate = new Date(dateMs);
+      recDate.setHours(0, 0, 0, 0);
+
+      if (userId && Types.ObjectId.isValid(userId)) {
+        attendance = await this.attendanceModel.findOne({
+          employee: new Types.ObjectId(userId),
+          date: recDate,
+        });
+
+        if (!attendance) {
+          attendance = new this.attendanceModel({
+            employee: new Types.ObjectId(userId),
+            date: recDate,
+            status: 'present',
+            workingHours: 0,
+            notes: 'Manually created by HR/Admin override',
+          });
+        }
+      }
+    }
+
+    if (!attendance && empId && Types.ObjectId.isValid(empId)) {
+      const recDate = targetDate || new Date();
+      recDate.setHours(0, 0, 0, 0);
+      attendance = new this.attendanceModel({
+        employee: new Types.ObjectId(empId),
+        date: recDate,
+        status: 'present',
+        workingHours: 0,
+        notes: 'Manually created by HR/Admin override',
+      });
+    }
+
     if (!attendance) throw new NotFoundException('Attendance record not found');
 
     const parseTime = (str?: string) => {
@@ -401,14 +582,16 @@ export class AttendanceService implements OnModuleInit {
     if (updateDto.checkInTime) {
       const parsed = parseTime(updateDto.checkInTime);
       if (parsed) {
-        const newCheckIn = new Date(attendance.checkIn || attendance.date);
-        newCheckIn.setHours(parsed.hours, parsed.minutes, 0, 0);
+        const baseDate = attendance.date || attendance.checkIn || new Date();
+        const newCheckIn = createISTDate(baseDate, parsed.hours, parsed.minutes);
         attendance.checkIn = newCheckIn;
 
         if (!updateDto.status || updateDto.status === 'auto') {
           const istMinutes = getISTMinutes(newCheckIn);
           if (istMinutes <= 600) {
             attendance.status = 'present';
+          } else if (istMinutes >= 780) {
+            attendance.status = 'half_day';
           } else {
             attendance.status = 'late';
           }
@@ -419,8 +602,8 @@ export class AttendanceService implements OnModuleInit {
     if (updateDto.checkOutTime) {
       const parsed = parseTime(updateDto.checkOutTime);
       if (parsed) {
-        const newCheckOut = new Date(attendance.checkOut || attendance.checkIn || attendance.date);
-        newCheckOut.setHours(parsed.hours, parsed.minutes, 0, 0);
+        const baseDate = attendance.date || attendance.checkOut || attendance.checkIn || new Date();
+        const newCheckOut = createISTDate(baseDate, parsed.hours, parsed.minutes);
         attendance.checkOut = newCheckOut;
       }
     }
@@ -525,7 +708,50 @@ export class AttendanceService implements OnModuleInit {
       return obj;
     });
 
-    return { attendances, total };
+    // When filtering by a specific date, include unrecorded active staff as Absent / Pending
+    if (date && !employee) {
+      const d = new Date(date);
+      d.setHours(0, 0, 0, 0);
+
+      const today = new Date();
+      today.setHours(0, 0, 0, 0);
+
+      const now = new Date();
+      const cutoff7PM = get7PMIST(now);
+      const isPastOrCutoff = d < today || (d.getTime() === today.getTime() && now.getTime() >= cutoff7PM.getTime());
+
+      const userFilter: any = {
+        isActive: { $ne: false },
+        role: { $nin: ['admin', 'super_admin', 'superadmin'] },
+        email: { $ne: 'hiverift@gmail.com' },
+      };
+      if (!isManagementOrHR) {
+        const uId = user?._id ? user._id.toString() : user?.id;
+        if (uId) userFilter._id = new Types.ObjectId(uId);
+      }
+
+      const activeUsers = await this.userModel.find(userFilter).select('name email role department designation');
+      const existingUserIds = new Set(attendances.map(a => a.employee?._id?.toString() || a.employee?.id?.toString() || a.employee?.toString()));
+
+      for (const u of activeUsers) {
+        if (!existingUserIds.has(u._id.toString())) {
+          attendances.push({
+            _id: `virtual_${isPastOrCutoff ? 'absent' : 'pending'}_${u._id}_${d.getTime()}`,
+            employee: u.toObject(),
+            date: d,
+            checkIn: null,
+            checkOut: null,
+            workingHours: 0,
+            status: isPastOrCutoff ? 'absent' : 'pending',
+            notes: isPastOrCutoff ? 'No Check-In Recorded (Absent)' : 'Not Checked In Yet',
+            totalBreakMinutes: 0,
+            breaks: [],
+          });
+        }
+      }
+    }
+
+    return { attendances, total: attendances.length };
   }
 
   async getMyAttendance(userId: string): Promise<AttendanceDocument | null> {
@@ -541,16 +767,41 @@ export class AttendanceService implements OnModuleInit {
     const today = new Date();
     today.setHours(0, 0, 0, 0);
 
+    await this.autoMarkAbsentExpiredShifts();
+
     const attendances = await this.attendanceModel.find({ date: today });
+    const activeUserCount = await this.userModel.countDocuments({
+      isActive: { $ne: false },
+      role: { $nin: ['admin', 'super_admin', 'superadmin'] },
+      email: { $ne: 'hiverift@gmail.com' },
+    });
+
     const present = attendances.filter((a) => a.status === 'present').length;
     const late = attendances.filter((a) => a.status === 'late').length;
     const halfDay = attendances.filter((a) => a.status === 'half_day').length;
+    const leave = attendances.filter((a) => a.status === 'leave').length;
+    const wfh = attendances.filter((a) => a.status === 'wfh').length;
+    const recordedAbsent = attendances.filter((a) => a.status === 'absent').length;
+
+    const checkedInTotal = present + late + halfDay + wfh;
+    const unrecorded = Math.max(0, activeUserCount - (checkedInTotal + leave + recordedAbsent));
+
+    const now = new Date();
+    const cutoff7PM = get7PMIST(now);
+    const isPast7PM = now.getTime() >= cutoff7PM.getTime();
+
+    const pending = isPast7PM ? 0 : unrecorded;
+    const totalAbsent = isPast7PM ? (recordedAbsent + unrecorded) : recordedAbsent;
 
     return {
-      total: attendances.length,
+      total: activeUserCount || attendances.length,
       present,
       late,
       halfDay,
+      pending,
+      absent: totalAbsent,
+      leave,
+      wfh,
     };
   }
 
@@ -575,6 +826,8 @@ export class AttendanceService implements OnModuleInit {
           presentDays: { $sum: { $cond: [{ $eq: ['$status', 'present'] }, 1, 0] } },
           lateDays: { $sum: { $cond: [{ $eq: ['$status', 'late'] }, 1, 0] } },
           halfDays: { $sum: { $cond: [{ $eq: ['$status', 'half_day'] }, 1, 0] } },
+          absentDays: { $sum: { $cond: [{ $eq: ['$status', 'absent'] }, 1, 0] } },
+          leaveDays: { $sum: { $cond: [{ $eq: ['$status', 'leave'] }, 1, 0] } },
           totalWorkingHours: { $sum: '$workingHours' },
         },
       },
@@ -598,6 +851,8 @@ export class AttendanceService implements OnModuleInit {
           presentDays: 1,
           lateDays: 1,
           halfDays: 1,
+          absentDays: 1,
+          leaveDays: 1,
           totalWorkingHours: { $round: ['$totalWorkingHours', 2] },
           avgWorkingHours: {
             $cond: [

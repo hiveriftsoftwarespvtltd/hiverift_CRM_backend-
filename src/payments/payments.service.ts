@@ -37,7 +37,7 @@ export class PaymentsService {
     let status = dto.status || 'pending';
     if (receivedAmount >= invoiceAmount && invoiceAmount > 0) status = 'paid';
     else if (receivedAmount > 0) status = 'partial';
-
+    
     const payload: any = {
       ...dto,
       paymentNo,
