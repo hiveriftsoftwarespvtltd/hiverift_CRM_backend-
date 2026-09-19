@@ -21,11 +21,22 @@ function getISTMinutes(date: Date): number {
 }
 
 /**
- * Calculates 07:00 PM IST (19:00 Asia/Kolkata) on the date of check-in.
- * 19:00 IST = 13:30 UTC.
+ * Parses any date input into a normalized Date object
  */
-function get7PMIST(dateInput: Date | string): Date {
-  const date = new Date(dateInput);
+function parseISTDate(dateInput?: Date | string | number): Date {
+  if (!dateInput) return new Date();
+  if (typeof dateInput === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(dateInput.trim())) {
+    const [y, m, d] = dateInput.trim().split('-').map(Number);
+    return new Date(Date.UTC(y, m - 1, d - 1, 18, 30, 0, 0));
+  }
+  return new Date(dateInput);
+}
+
+/**
+ * Returns Start of IST day (00:00:00.000 Asia/Kolkata)
+ */
+function getStartOfISTDay(dateInput?: Date | string | number): Date {
+  const d = parseISTDate(dateInput);
   try {
     const formatter = new Intl.DateTimeFormat('en-US', {
       timeZone: 'Asia/Kolkata',
@@ -33,16 +44,33 @@ function get7PMIST(dateInput: Date | string): Date {
       month: '2-digit',
       day: '2-digit',
     });
-    const parts = formatter.formatToParts(date);
+    const parts = formatter.formatToParts(d);
     const year = Number(parts.find(p => p.type === 'year')?.value);
     const month = Number(parts.find(p => p.type === 'month')?.value);
     const day = Number(parts.find(p => p.type === 'day')?.value);
-    return new Date(Date.UTC(year, month - 1, day, 13, 30, 0, 0));
+    return new Date(Date.UTC(year, month - 1, day - 1, 18, 30, 0, 0));
   } catch {
-    const d = new Date(date);
-    d.setUTCHours(13, 30, 0, 0);
-    return d;
+    const date = new Date(d);
+    date.setUTCHours(0, 0, 0, 0);
+    return date;
   }
+}
+
+/**
+ * Returns End of IST day (23:59:59.999 Asia/Kolkata)
+ */
+function getEndOfISTDay(dateInput?: Date | string | number): Date {
+  const start = getStartOfISTDay(dateInput);
+  return new Date(start.getTime() + 24 * 60 * 60 * 1000 - 1);
+}
+
+/**
+ * Calculates 07:00 PM IST (19:00 Asia/Kolkata) on the date.
+ * 19 hours after start of IST day.
+ */
+function get7PMIST(dateInput: Date | string | number): Date {
+  const start = getStartOfISTDay(dateInput);
+  return new Date(start.getTime() + 19 * 60 * 60 * 1000);
 }
 
 /**
@@ -173,27 +201,25 @@ export class AttendanceService implements OnModuleInit {
   async autoMarkAbsentExpiredShifts(): Promise<void> {
     try {
       const now = new Date();
+      const startOfToday = getStartOfISTDay(now);
+      const endOfToday = getEndOfISTDay(now);
       const cutoff7PM = get7PMIST(now);
 
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-
-      // Only run auto-absent scanner if current time has reached or passed 07:00 PM IST
-      if (now.getTime() < cutoff7PM.getTime()) {
-        await this.attendanceModel.deleteMany({
-          date: today,
-          status: 'absent',
-          checkIn: { $exists: false },
-        });
-        return;
-      }
-
-      // Check IST day of week (0 = Sunday)
+      // Skips Sundays (in IST)
       const istDayString = now.toLocaleDateString('en-US', { timeZone: 'Asia/Kolkata', weekday: 'short' });
       if (istDayString === 'Sun') {
         return; // Skip Sunday
       }
 
+      // Only run auto-absent scanner if current time has reached or passed 07:00 PM IST
+      if (now.getTime() < cutoff7PM.getTime()) {
+        await this.attendanceModel.deleteMany({
+          date: { $gte: startOfToday, $lte: endOfToday },
+          status: 'absent',
+          checkIn: { $exists: false },
+        });
+        return;
+      }
 
       // Find all active employees (excluding Super Admin/head)
       const activeEmployees = await this.userModel.find({
@@ -203,17 +229,17 @@ export class AttendanceService implements OnModuleInit {
       }).select('_id name email role');
 
       for (const employee of activeEmployees) {
-        // Check if attendance record exists for today
+        // Check if attendance record exists for today (in IST range)
         const existing = await this.attendanceModel.findOne({
           employee: employee._id,
-          date: today,
+          date: { $gte: startOfToday, $lte: endOfToday },
         });
 
         if (!existing) {
           // Create explicit Absent record for today
           await new this.attendanceModel({
             employee: employee._id,
-            date: today,
+            date: startOfToday,
             status: 'absent',
             workingHours: 0,
             notes: 'Auto-marked Absent (No check-in by 07:00 PM IST)',
@@ -233,10 +259,14 @@ export class AttendanceService implements OnModuleInit {
    * - Rule: 1 Check-In per day. Once checked out, next check-in is only allowed next day.
    */
   async checkIn(userId: string, notes?: string): Promise<AttendanceDocument> {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const now = new Date();
+    const startOfToday = getStartOfISTDay(now);
+    const endOfToday = getEndOfISTDay(now);
 
-    const existing = await this.attendanceModel.findOne({ employee: new Types.ObjectId(userId), date: today });
+    const existing = await this.attendanceModel.findOne({
+      employee: new Types.ObjectId(userId),
+      date: { $gte: startOfToday, $lte: endOfToday },
+    });
     if (existing) {
       if (existing.checkOut) {
         throw new ConflictException('Shift already completed for today. Next check-in is available tomorrow.');
@@ -258,7 +288,7 @@ export class AttendanceService implements OnModuleInit {
 
     return new this.attendanceModel({
       employee: new Types.ObjectId(userId),
-      date: today,
+      date: startOfToday,
       checkIn: checkInTime,
       status,
       notes: notes || `Shift: 10:00 AM - 07:00 PM`,
@@ -273,10 +303,14 @@ export class AttendanceService implements OnModuleInit {
    * - Once checked out, shift is marked complete for today.
    */
   async checkOut(userId: string): Promise<AttendanceDocument> {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const now = new Date();
+    const startOfToday = getStartOfISTDay(now);
+    const endOfToday = getEndOfISTDay(now);
 
-    const attendance = await this.attendanceModel.findOne({ employee: new Types.ObjectId(userId), date: today });
+    const attendance = await this.attendanceModel.findOne({
+      employee: new Types.ObjectId(userId),
+      date: { $gte: startOfToday, $lte: endOfToday },
+    });
     if (!attendance) throw new NotFoundException('No check-in record found for today');
     if (attendance.checkOut) {
       return attendance;
@@ -627,6 +661,7 @@ export class AttendanceService implements OnModuleInit {
 
   async findAll(query: any, user: any): Promise<{ attendances: any[]; total: number }> {
     await this.autoCheckoutExpiredShifts();
+    await this.autoMarkAbsentExpiredShifts();
     const { employee, status, startDate, endDate, date, page = 1, limit = 100 } = query;
     const filter: any = {};
 
@@ -645,22 +680,16 @@ export class AttendanceService implements OnModuleInit {
     if (status && status !== 'all') filter.status = status;
 
     if (date) {
-      const d = new Date(date);
-      d.setHours(0, 0, 0, 0);
-      const nextD = new Date(d);
-      nextD.setDate(nextD.getDate() + 1);
-      filter.date = { $gte: d, $lt: nextD };
+      const startD = getStartOfISTDay(date);
+      const endD = getEndOfISTDay(date);
+      filter.date = { $gte: startD, $lte: endD };
     } else if (startDate || endDate) {
       filter.date = {};
       if (startDate) {
-        const sD = new Date(startDate);
-        sD.setHours(0, 0, 0, 0);
-        filter.date.$gte = sD;
+        filter.date.$gte = getStartOfISTDay(startDate);
       }
       if (endDate) {
-        const eD = new Date(endDate);
-        eD.setHours(23, 59, 59, 999);
-        filter.date.$lte = eD;
+        filter.date.$lte = getEndOfISTDay(endDate);
       }
     }
 
@@ -710,15 +739,14 @@ export class AttendanceService implements OnModuleInit {
 
     // When filtering by a specific date, include unrecorded active staff as Absent / Pending
     if (date && !employee) {
-      const d = new Date(date);
-      d.setHours(0, 0, 0, 0);
-
-      const today = new Date();
-      today.setHours(0, 0, 0, 0);
-
+      const targetStart = getStartOfISTDay(date);
+      const targetEnd = getEndOfISTDay(date);
+      const target7PM = get7PMIST(date);
       const now = new Date();
-      const cutoff7PM = get7PMIST(now);
-      const isPastOrCutoff = d < today || (d.getTime() === today.getTime() && now.getTime() >= cutoff7PM.getTime());
+
+      const isPastDay = targetEnd.getTime() < now.getTime();
+      const isTodayAndPast7PM = (now.getTime() >= targetStart.getTime() && now.getTime() <= targetEnd.getTime() && now.getTime() >= target7PM.getTime());
+      const isPastOrCutoff = isPastDay || isTodayAndPast7PM;
 
       const userFilter: any = {
         isActive: { $ne: false },
@@ -735,18 +763,21 @@ export class AttendanceService implements OnModuleInit {
 
       for (const u of activeUsers) {
         if (!existingUserIds.has(u._id.toString())) {
-          attendances.push({
-            _id: `virtual_${isPastOrCutoff ? 'absent' : 'pending'}_${u._id}_${d.getTime()}`,
-            employee: u.toObject(),
-            date: d,
-            checkIn: null,
-            checkOut: null,
-            workingHours: 0,
-            status: isPastOrCutoff ? 'absent' : 'pending',
-            notes: isPastOrCutoff ? 'No Check-In Recorded (Absent)' : 'Not Checked In Yet',
-            totalBreakMinutes: 0,
-            breaks: [],
-          });
+          const virtualStatus = isPastOrCutoff ? 'absent' : 'pending';
+          if (!status || status === 'all' || status === virtualStatus) {
+            attendances.push({
+              _id: `virtual_${virtualStatus}_${u._id}_${targetStart.getTime()}`,
+              employee: u.toObject(),
+              date: targetStart,
+              checkIn: null,
+              checkOut: null,
+              workingHours: 0,
+              status: virtualStatus,
+              notes: isPastOrCutoff ? 'No Check-In Recorded (Absent)' : 'Not Checked In Yet',
+              totalBreakMinutes: 0,
+              breaks: [],
+            });
+          }
         }
       }
     }
@@ -755,21 +786,26 @@ export class AttendanceService implements OnModuleInit {
   }
 
   async getMyAttendance(userId: string): Promise<AttendanceDocument | null> {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const now = new Date();
+    const startOfToday = getStartOfISTDay(now);
+    const endOfToday = getEndOfISTDay(now);
     return this.attendanceModel.findOne({
       employee: new Types.ObjectId(userId),
-      date: today,
+      date: { $gte: startOfToday, $lte: endOfToday },
     });
   }
 
   async getTodaySummary(): Promise<any> {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-
     await this.autoMarkAbsentExpiredShifts();
 
-    const attendances = await this.attendanceModel.find({ date: today });
+    const now = new Date();
+    const startOfToday = getStartOfISTDay(now);
+    const endOfToday = getEndOfISTDay(now);
+    const cutoff7PM = get7PMIST(now);
+
+    const attendances = await this.attendanceModel.find({
+      date: { $gte: startOfToday, $lte: endOfToday },
+    });
     const activeUserCount = await this.userModel.countDocuments({
       isActive: { $ne: false },
       role: { $nin: ['admin', 'super_admin', 'superadmin'] },
@@ -786,8 +822,6 @@ export class AttendanceService implements OnModuleInit {
     const checkedInTotal = present + late + halfDay + wfh;
     const unrecorded = Math.max(0, activeUserCount - (checkedInTotal + leave + recordedAbsent));
 
-    const now = new Date();
-    const cutoff7PM = get7PMIST(now);
     const isPast7PM = now.getTime() >= cutoff7PM.getTime();
 
     const pending = isPast7PM ? 0 : unrecorded;
