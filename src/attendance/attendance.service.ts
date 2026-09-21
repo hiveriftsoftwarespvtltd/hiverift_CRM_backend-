@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ConflictException, OnModuleInit } from '@nestjs/common';
+import { Injectable, NotFoundException, ConflictException, BadRequestException, OnModuleInit } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Attendance, AttendanceDocument } from './schemas/attendance.schema';
@@ -311,7 +311,7 @@ export class AttendanceService implements OnModuleInit {
       employee: new Types.ObjectId(userId),
       date: { $gte: startOfToday, $lte: endOfToday },
     });
-    if (!attendance) throw new NotFoundException('No check-in record found for today');
+    if (!attendance) throw new BadRequestException('Please check-in first before checking out');
     if (attendance.checkOut) {
       return attendance;
     }
@@ -387,11 +387,15 @@ export class AttendanceService implements OnModuleInit {
    * Types: 'Tea Break' | 'Lunch Break' | 'Bio Break' | 'Training' | 'Huddle'
    */
   async startBreak(userId: string, breakType: string): Promise<AttendanceDocument> {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const now = new Date();
+    const startOfToday = getStartOfISTDay(now);
+    const endOfToday = getEndOfISTDay(now);
 
-    const attendance = await this.attendanceModel.findOne({ employee: new Types.ObjectId(userId), date: today });
-    if (!attendance) throw new NotFoundException('Please check-in first before taking a break');
+    const attendance = await this.attendanceModel.findOne({
+      employee: new Types.ObjectId(userId),
+      date: { $gte: startOfToday, $lte: endOfToday },
+    });
+    if (!attendance) throw new BadRequestException('Please check-in first before taking a break');
     if (attendance.checkOut) throw new ConflictException('Shift is already completed for today');
     if (attendance.activeBreak && attendance.activeBreak.startTime) {
       throw new ConflictException(`Already on ${attendance.activeBreak.type}. Please resume work first.`);
@@ -439,16 +443,19 @@ export class AttendanceService implements OnModuleInit {
    * Calculates duration in minutes and adds to breaks history & totalBreakMinutes
    */
   async endBreak(userId: string): Promise<AttendanceDocument> {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
+    const now = new Date();
+    const startOfToday = getStartOfISTDay(now);
+    const endOfToday = getEndOfISTDay(now);
 
-    const attendance = await this.attendanceModel.findOne({ employee: new Types.ObjectId(userId), date: today });
-    if (!attendance) throw new NotFoundException('No attendance record found for today');
+    const attendance = await this.attendanceModel.findOne({
+      employee: new Types.ObjectId(userId),
+      date: { $gte: startOfToday, $lte: endOfToday },
+    });
+    if (!attendance) throw new BadRequestException('Please check-in first before ending a break');
     if (!attendance.activeBreak || !attendance.activeBreak.startTime) {
       throw new ConflictException('No active break found to end');
     }
 
-    const now = new Date();
     const durationMinutes = Math.max(1, Math.round((now.getTime() - new Date(attendance.activeBreak.startTime).getTime()) / (1000 * 60)));
     const endedBreakType = attendance.activeBreak.type || 'Break';
 
