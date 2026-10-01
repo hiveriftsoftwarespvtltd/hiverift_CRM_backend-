@@ -76,8 +76,8 @@ async function bootstrap() {
 
   const port = process.env.PORT || 5000;
   await app.listen(port);
-  console.log(`🚀 HiveRift CRM Backend running on port ${port}`);
-  console.log(`📡 API Base Endpoint: http://localhost:${port}/api/v1 (Meta Incoming Webhook Active)`);
+  console.log(`📡 API Base Endpoint: https://api.hiveriftdesk.online/api/v1 (Meta Incoming Webhook Active)`);
+  // console.log(`📡 API Base Endpoint: http://localhost:${port}/api/v1 (Meta Incoming Webhook Active)`);
   // console.log(`📡 API Base Endpoint: https://hiveriftdesk.online/hiveriftCRM-backend/api/v1 (Meta Incoming Webhook Active)`);
 }
 bootstrap();
