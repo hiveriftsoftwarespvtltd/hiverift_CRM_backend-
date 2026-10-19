@@ -4,27 +4,38 @@ import { Document, Types } from 'mongoose';
 export type TaskDocument = Task & Document;
 
 export enum TaskType {
+  GENERAL = 'GENERAL',
+  DEVELOPMENT = 'DEVELOPMENT',
+  BUG = 'BUG',
+  MARKETING = 'MARKETING',
+  SEO = 'SEO',
+  SUPPORT = 'SUPPORT',
+  INTERNAL = 'INTERNAL',
   PERSONAL = 'PERSONAL',
   DEPARTMENT = 'DEPARTMENT',
   PROJECT = 'PROJECT',
   CLIENT_DELIVERABLE = 'CLIENT_DELIVERABLE',
   CROSS_DEPARTMENT = 'CROSS_DEPARTMENT',
-  BUG = 'BUG',
-  SUPPORT = 'SUPPORT',
   RECURRING = 'RECURRING',
+  SALES = 'SALES',
+  HR = 'HR',
+  ADMIN = 'ADMIN',
 }
 
 export enum TaskStatus {
-  DRAFT = 'DRAFT',
+  // Canonical 6 Statuses
   TODO = 'TODO',
   IN_PROGRESS = 'IN_PROGRESS',
+  BLOCKED = 'BLOCKED',
   SUBMITTED = 'SUBMITTED',
-  REVIEW = 'REVIEW',
   REWORK = 'REWORK',
-  APPROVED = 'APPROVED',
+  DONE = 'DONE',
+  // Backward-compatibility aliases
   COMPLETED = 'COMPLETED',
+  APPROVED = 'APPROVED',
   ON_HOLD = 'ON_HOLD',
-  OVERDUE = 'OVERDUE',
+  DRAFT = 'DRAFT',
+  REVIEW = 'REVIEW',
   CANCELLED = 'CANCELLED',
 }
 
@@ -62,8 +73,14 @@ export class Task {
   @Prop({ type: Types.ObjectId, ref: 'Client' })
   client: Types.ObjectId;
 
+  @Prop({ trim: true })
+  clientName: string;
+
   @Prop({ type: Types.ObjectId, ref: 'Project' })
   project: Types.ObjectId;
+
+  @Prop({ type: Types.ObjectId, ref: 'Ticket' })
+  linkedTicket: Types.ObjectId;
 
   @Prop({ trim: true })
   milestone: string;
@@ -132,9 +149,54 @@ export class Task {
   @Prop({ type: Date })
   crossDeptApprovedAt: Date;
 
+  @Prop({ trim: true, index: true })
+  taskId: string;
+
+  @Prop({ trim: true })
+  acceptanceCriteria: string;
+
+  @Prop({ trim: true })
+  blockedReason: string;
+
+  @Prop({ default: true })
+  reviewRequired: boolean;
+
+  @Prop({ trim: true })
+  reviewerDecision: string;
+
+  @Prop({ type: Date })
+  reviewerDecisionAt: Date;
+
+  @Prop({ trim: true })
+  reopenReason: string;
+
+  @Prop({ type: Types.ObjectId, ref: 'User' })
+  reopenedBy: Types.ObjectId;
+
+  @Prop({ type: Date })
+  reopenedAt: Date;
+
+  @Prop({ trim: true })
+  completionEvidence: string;
+
+  @Prop({ trim: true })
+  deliveryEvidence: string;
+
   // Deliverable & Marketing Integration
   @Prop({ trim: true })
   deliverableType: string;
+
+  @Prop({ trim: true })
+  campaignName: string;
+
+  @Prop({ trim: true })
+  targetKeywords: string;
+
+  @Prop({ trim: true })
+  publicationUrl: string;
+
+  @Prop({ default: 0 })
+  budget: number;
 
   @Prop({ default: false })
   clientReviewRequired: boolean;
@@ -151,6 +213,15 @@ export class Task {
 
   @Prop({ trim: true })
   bugStepsToReproduce: string;
+
+  @Prop({ trim: true })
+  bugExpectedResult: string;
+
+  @Prop({ trim: true })
+  bugActualResult: string;
+
+  @Prop({ trim: true })
+  bugUrlOrModule: string;
 
   @Prop({ trim: true })
   bugFixSummary: string;
@@ -193,8 +264,8 @@ export class Task {
   @Prop({ default: false })
   isDependencyResolved: boolean;
 
-  @Prop({ type: [String], default: [] })
-  attachments: string[];
+  @Prop({ type: Array, default: [] })
+  attachments: any[];
 
   @Prop([
     {
@@ -207,3 +278,19 @@ export class Task {
 }
 
 export const TaskSchema = SchemaFactory.createForClass(Task);
+
+// Virtual for calculating Overdue dynamically
+TaskSchema.virtual('isOverdue').get(function (this: TaskDocument) {
+  const s = String(this.status || '').toUpperCase();
+  if (['DONE', 'COMPLETED', 'CANCELLED'].includes(s)) return false;
+  if (!this.dueDate) return false;
+  const now = new Date();
+  const due = new Date(this.dueDate);
+  // Compare end of due date day with current timestamp
+  return due.getTime() < now.getTime();
+});
+
+// Configure JSON serialization to include virtuals
+TaskSchema.set('toJSON', { virtuals: true });
+TaskSchema.set('toObject', { virtuals: true });
+

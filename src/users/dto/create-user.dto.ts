@@ -42,4 +42,10 @@ export class CreateUserDto {
 
   @IsOptional()
   joiningDate?: Date;
+
+  @IsOptional()
+  dailyWorkingHours?: number;
+
+  @IsOptional()
+  skills?: string[];
 }

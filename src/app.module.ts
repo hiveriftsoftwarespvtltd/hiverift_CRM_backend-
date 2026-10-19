@@ -22,6 +22,8 @@ import { InvoicesModule } from './invoices/invoices.module';
 import { MonitoringModule } from './monitoring/monitoring.module';
 import { MetaModule } from './meta/meta.module';
 import { SettingsModule } from './settings/settings.module';
+import { TicketsModule } from './tickets/tickets.module';
+import { CapacityModule } from './capacity/capacity.module';
 
 @Module({
   imports: [
@@ -49,6 +51,7 @@ import { SettingsModule } from './settings/settings.module';
     ClientsModule,
     ProjectsModule,
     TasksModule,
+    TicketsModule,
     PaymentsModule,
     RenewalsModule,
     AttendanceModule,
@@ -63,6 +66,7 @@ import { SettingsModule } from './settings/settings.module';
     MonitoringModule,
     MetaModule,
     SettingsModule,
+    CapacityModule,
   ],
 })
 export class AppModule {}

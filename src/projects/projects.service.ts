@@ -66,18 +66,23 @@ export class ProjectsService {
 
     if (!isAdmin) {
       const uId = user?._id ? user._id.toString() : user?.id ? user.id.toString() : user?.sub ? user.sub.toString() : '';
+      const orClauses: any[] = [];
       if (uId && Types.ObjectId.isValid(uId)) {
         const uObjId = new Types.ObjectId(uId);
-        conditions.push({
-          $or: [
-            { assignedBy: uObjId },
-            { assignedBy: uId },
-            { assignedTo: uObjId },
-            { assignedTo: uId },
-            { 'assignedTeam.user': uObjId },
-            { 'assignedTeam.user': uId },
-          ],
-        });
+        orClauses.push(
+          { assignedBy: uObjId },
+          { assignedBy: uId },
+          { assignedTo: uObjId },
+          { assignedTo: uId },
+          { 'assignedTeam.user': uObjId },
+          { 'assignedTeam.user': uId },
+        );
+      }
+      if (user?.department) {
+        orClauses.push({ department: String(user.department).toLowerCase() });
+      }
+      if (orClauses.length > 0) {
+        conditions.push({ $or: orClauses });
       } else {
         conditions.push({ _id: null });
       }
@@ -103,7 +108,7 @@ export class ProjectsService {
     const [projects, total] = await Promise.all([
       this.projectModel
         .find(filter)
-        .populate('client', 'name company')
+        .populate('client', 'name company phone email whatsapp address city')
         .populate('assignedTo', 'name email role department')
         .populate('assignedTeam.user', 'name email role department designation avatar')
         .populate('assignedBy', 'name email role')
@@ -118,7 +123,7 @@ export class ProjectsService {
   async findOne(id: string, user?: any): Promise<ProjectDocument> {
     const project = await this.projectModel
       .findById(id)
-      .populate('client', 'name company email phone address')
+      .populate('client', 'name company email phone whatsapp address city')
       .populate('assignedTo', 'name email role department')
       .populate('assignedTeam.user', 'name email role department designation avatar')
       .populate('assignedBy', 'name email')
@@ -137,8 +142,9 @@ export class ProjectsService {
         const memberId = m.user?._id ? m.user._id.toString() : m.user?.toString();
         return memberId === uId;
       });
+      const isDeptMember = user?.department && project?.department && String(user.department).toLowerCase() === String(project.department).toLowerCase();
 
-      if (assignedByStr !== uId && assignedToStr !== uId && !isMember) {
+      if (assignedByStr !== uId && assignedToStr !== uId && !isMember && !isDeptMember) {
         throw new NotFoundException('Project not found');
       }
     }
@@ -163,7 +169,7 @@ export class ProjectsService {
       }
     }
     const project = await this.projectModel.findByIdAndUpdate(id, payload, { new: true })
-      .populate('client', 'name company')
+      .populate('client', 'name company phone email whatsapp address city')
       .populate('assignedTo', 'name email role department')
       .populate('assignedTeam.user', 'name email role department designation avatar')
       .populate('assignedBy', 'name email role');

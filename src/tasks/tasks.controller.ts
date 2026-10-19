@@ -1,10 +1,11 @@
-import { Controller, Get, Post, Body, Put, Param, Delete, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, Put, Param, Delete, Query, UseGuards, Patch } from '@nestjs/common';
 import { TasksService } from './tasks.service';
 import { CreateTaskDto } from './dto/create-task.dto';
 import { UpdateTaskStatusDto } from './dto/update-task-status.dto';
 import { ApproveCrossDeptDto, RejectCrossDeptDto } from './dto/approve-cross-dept.dto';
 import { RequestReassignDto, RejectReassignDto } from './dto/request-reassign.dto';
 import { LogTimeSessionDto } from './dto/log-time-session.dto';
+import { AddCommentDto } from './dto/add-comment.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
@@ -26,10 +27,88 @@ export class TasksController {
     return { success: true, message: 'Tasks fetched successfully', data: result };
   }
 
+  @Get('metrics/overview')
+  async getMetricsOverview(@Query() query: any, @CurrentUser() user: any) {
+    const data = await this.tasksService.getDashboardTaskMetrics(query, user);
+    return { success: true, message: 'Task metrics overview fetched', data };
+  }
+
+  @Get('metrics/departments')
+  async getDepartmentMetrics(@CurrentUser() user: any) {
+    const data = await this.tasksService.getDepartmentMetrics(user);
+    return { success: true, message: 'Department task metrics fetched', data };
+  }
+
   @Get('workload/summary')
   async getWorkload(@CurrentUser() user: any) {
     const data = await this.tasksService.getWorkloadSummary(user);
     return { success: true, message: 'Workload summary fetched', data };
+  }
+
+  // Workflow 3: Live timer persistence across page refresh and browser reconnection
+  @Get('timer/active')
+  async getActiveTimer(@CurrentUser() user: any) {
+    const result = await this.tasksService.getActiveTimer(user);
+    return { success: true, message: 'Active timer retrieved', data: result };
+  }
+
+  // Workflow 2 & 5: Start timer with rejection of second concurrent timer
+  @Post('timer/start')
+  async startTimer(@Body() body: any, @CurrentUser() user: any) {
+    const entry = await this.tasksService.startTimer(body, user);
+    return { success: true, message: 'Timer session started', data: entry };
+  }
+
+  // Workflow 4: Pause active timer
+  @Post('timer/pause')
+  async pauseTimer(@Body('timerId') timerId: string, @CurrentUser() user: any) {
+    const entry = await this.tasksService.pauseTimer(user, timerId);
+    return { success: true, message: 'Timer paused', data: entry };
+  }
+
+  // Workflow 4: Resume paused timer
+  @Post('timer/resume')
+  async resumeTimer(@Body('timerId') timerId: string, @CurrentUser() user: any) {
+    const entry = await this.tasksService.resumeTimer(user, timerId);
+    return { success: true, message: 'Timer resumed', data: entry };
+  }
+
+  // Workflow 4: Stop timer and accurately log actual hours
+  @Post('timer/stop')
+  async stopTimer(
+    @Body('timerId') timerId: string,
+    @Body('notes') notes: string,
+    @CurrentUser() user: any,
+  ) {
+    const entry = await this.tasksService.stopTimer(user, timerId, notes);
+    return { success: true, message: 'Timer stopped and duration logged', data: entry };
+  }
+
+  // Workflow 7: All time entries remain accurate and auditable
+  @Get('timer/entries')
+  async getTimeEntries(
+    @Query('taskId') taskId: string,
+    @Query('projectId') projectId: string,
+  ) {
+    const entries = await this.tasksService.getTimeEntries(taskId, projectId);
+    return { success: true, message: 'Time entries fetched', data: entries };
+  }
+
+  // Workflow 14: Trigger check and notification dispatch for overdue and SLA risk tasks
+  @Post('cron/check-sla-overdue')
+  async triggerSlaOverdueAlerts() {
+    const summary = await this.tasksService.checkAndNotifyOverdueAndSlaRisks();
+    return { success: true, message: 'Overdue and SLA risk alerts processed', data: summary };
+  }
+
+  @Post(':id/reopen')
+  async reopenTask(
+    @Param('id') id: string,
+    @Body('reason') reason: string,
+    @CurrentUser() user: any,
+  ) {
+    const task = await this.tasksService.updateStatus(id, { status: 'TODO' as any, reopenReason: reason }, user);
+    return { success: true, message: 'Task reopened successfully', data: task };
   }
 
   @Get(':id')
@@ -116,6 +195,56 @@ export class TasksController {
   async getProgress(@Param('projectId') projectId: string) {
     const progress = await this.tasksService.getProjectProgress(projectId);
     return { success: true, message: 'Progress calculated', data: { progress } };
+  }
+
+  @Patch(':id/checklist/:index/toggle')
+  async toggleChecklistItem(
+    @Param('id') id: string,
+    @Param('index') index: string,
+    @CurrentUser() user: any,
+  ) {
+    const task = await this.tasksService.toggleChecklistItem(id, parseInt(index, 10), user);
+    return { success: true, message: 'Checklist item toggled', data: task };
+  }
+
+  @Post(':id/comments')
+  async addComment(
+    @Param('id') id: string,
+    @Body() dto: AddCommentDto,
+    @CurrentUser() user: any,
+  ) {
+    const task = await this.tasksService.addComment(id, dto.comment, user);
+    return { success: true, message: 'Comment added', data: task };
+  }
+
+  @Delete(':id/comments/:commentId')
+  async removeComment(
+    @Param('id') id: string,
+    @Param('commentId') commentId: string,
+    @CurrentUser() user: any,
+  ) {
+    const task = await this.tasksService.removeComment(id, commentId, user);
+    return { success: true, message: 'Comment removed', data: task };
+  }
+
+  @Post(':id/attachments')
+  async addAttachment(
+    @Param('id') id: string,
+    @Body() body: any,
+    @CurrentUser() user: any,
+  ) {
+    const task = await this.tasksService.addAttachment(id, body, user);
+    return { success: true, message: 'Attachment added', data: task };
+  }
+
+  @Delete(':id/attachments/:index')
+  async removeAttachment(
+    @Param('id') id: string,
+    @Param('index') index: string,
+    @CurrentUser() user: any,
+  ) {
+    const task = await this.tasksService.removeAttachment(id, parseInt(index, 10), user);
+    return { success: true, message: 'Attachment removed', data: task };
   }
 
   @Delete(':id')

@@ -666,10 +666,10 @@ export class DashboardService {
       this.projectModel.countDocuments({ ...matchFilter, status: 'completed' }),
       this.projectModel.countDocuments({ ...matchFilter, deadline: { $lt: today }, status: { $nin: ['completed', 'cancelled'] } }),
       this.projectModel.countDocuments({ ...matchFilter, deadline: { $gte: today, $lte: next7Days }, status: { $nin: ['completed', 'cancelled'] } }),
-      this.taskModel.countDocuments(matchFilter),
-      this.taskModel.countDocuments({ ...matchFilter, status: { $in: ['todo', 'in_progress'] } }),
-      this.taskModel.countDocuments({ ...matchFilter, status: 'review' }),
-      this.taskModel.countDocuments({ ...matchFilter, status: 'completed' }),
+      this.taskModel.countDocuments({ ...matchFilter, taskType: { $ne: 'PERSONAL' } }),
+      this.taskModel.countDocuments({ ...matchFilter, taskType: { $ne: 'PERSONAL' }, status: { $in: ['TODO', 'IN_PROGRESS', 'todo', 'in_progress'] } }),
+      this.taskModel.countDocuments({ ...matchFilter, taskType: { $ne: 'PERSONAL' }, status: { $in: ['SUBMITTED', 'REVIEW', 'review', 'submitted'] } }),
+      this.taskModel.countDocuments({ ...matchFilter, taskType: { $ne: 'PERSONAL' }, status: { $in: ['DONE', 'COMPLETED', 'completed', 'done'] } }),
     ]);
 
     return {

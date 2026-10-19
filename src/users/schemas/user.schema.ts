@@ -54,6 +54,12 @@ export class User {
   @Prop({ type: Date })
   joiningDate: Date;
 
+  @Prop({ type: Number, default: 8 })
+  dailyWorkingHours: number;
+
+  @Prop({ type: [String], default: [] })
+  skills: string[];
+
   @Prop({ type: String, select: false })
   refreshToken: string;
 }

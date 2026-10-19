@@ -8,9 +8,11 @@ import { TaskAudit, TaskAuditSchema } from './schemas/task-audit.schema';
 import { Project, ProjectSchema } from '../projects/schemas/project.schema';
 import { User, UserSchema } from '../users/schemas/user.schema';
 import { Client, ClientSchema } from '../clients/schemas/client.schema';
+import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
   imports: [
+    NotificationsModule,
     MongooseModule.forFeature([
       { name: Task.name, schema: TaskSchema },
       { name: TimeEntry.name, schema: TimeEntrySchema },

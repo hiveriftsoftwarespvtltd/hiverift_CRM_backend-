@@ -19,6 +19,10 @@ export class CreateTaskDto {
 
   @IsOptional()
   @IsString()
+  clientName?: string;
+
+  @IsOptional()
+  @IsString()
   project?: string;
 
   @IsOptional()
@@ -90,5 +94,51 @@ export class CreateTaskDto {
   @IsOptional()
   @IsString()
   bugStepsToReproduce?: string;
+
+  @IsOptional()
+  @IsString()
+  bugExpectedResult?: string;
+
+  @IsOptional()
+  @IsString()
+  bugActualResult?: string;
+
+  @IsOptional()
+  @IsString()
+  bugUrlOrModule?: string;
+
+  // Additional canonical fields
+  @IsOptional()
+  @IsString()
+  acceptanceCriteria?: string;
+
+  @IsOptional()
+  @IsString()
+  blockedReason?: string;
+
+  @IsOptional()
+  @IsString()
+  reviewer?: string;
+
+  @IsOptional()
+  @IsBoolean()
+  reviewRequired?: boolean;
+
+  // Marketing fields
+  @IsOptional()
+  @IsString()
+  campaignName?: string;
+
+  @IsOptional()
+  @IsString()
+  targetKeywords?: string;
+
+  @IsOptional()
+  @IsString()
+  publicationUrl?: string;
+
+  @IsOptional()
+  @IsNumber()
+  budget?: number;
 }
 

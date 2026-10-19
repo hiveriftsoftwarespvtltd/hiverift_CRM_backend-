@@ -2,6 +2,8 @@ import { Injectable, NotFoundException, BadRequestException } from '@nestjs/comm
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { User, UserDocument } from './schemas/user.schema';
+import { Task, TaskDocument } from '../tasks/schemas/task.schema';
+import { Leave, LeaveDocument } from '../leaves/schemas/leave.schema';
 import { CreateUserDto } from './dto/create-user.dto';
 import { UpdateUserDto } from './dto/update-user.dto';
 import * as bcrypt from 'bcryptjs';
@@ -10,6 +12,8 @@ import * as bcrypt from 'bcryptjs';
 export class UsersService {
   constructor(
     @InjectModel(User.name) private userModel: Model<UserDocument>,
+    @InjectModel(Task.name) private taskModel: Model<TaskDocument>,
+    @InjectModel(Leave.name) private leaveModel: Model<LeaveDocument>,
   ) {}
 
   async create(createUserDto: CreateUserDto): Promise<UserDocument> {
@@ -23,6 +27,10 @@ export class UsersService {
     } else {
       delete payload.reportingTo;
     }
+    if (typeof payload.skills === 'string') {
+      payload.skills = payload.skills.split(',').map((s: string) => s.trim()).filter(Boolean);
+    }
+    payload.dailyWorkingHours = Number(payload.dailyWorkingHours) || 8;
     const user = new this.userModel(payload);
     return user.save();
   }
@@ -111,6 +119,19 @@ export class UsersService {
     } else if (payload.reportingTo === '' || payload.reportingTo === null) {
       payload.reportingTo = null;
     }
+    if (typeof payload.skills === 'string') {
+      payload.skills = payload.skills.split(',').map((s: string) => s.trim()).filter(Boolean);
+    }
+    if (payload.dailyWorkingHours !== undefined) {
+      payload.dailyWorkingHours = Number(payload.dailyWorkingHours) || 8;
+    }
+    if (payload.isActive === false) {
+      // Auto-unassign non-completed tasks when employee is deactivated so workload auto-recalculates
+      await this.taskModel.updateMany(
+        { assignedTo: new Types.ObjectId(id), status: { $nin: ['DONE', 'COMPLETED', 'CANCELLED'] } },
+        { $unset: { assignedTo: 1 } },
+      );
+    }
     const user = await this.userModel
       .findByIdAndUpdate(id, payload, { new: true })
       .populate('reportingTo', 'name email role designation isDepartmentHead')
@@ -130,6 +151,14 @@ export class UsersService {
   }
 
   async remove(id: string): Promise<void> {
+    // 1. Unassign non-completed tasks so company-wide capacity auto-recalculates immediately
+    await this.taskModel.updateMany(
+      { assignedTo: new Types.ObjectId(id), status: { $nin: ['DONE', 'COMPLETED', 'CANCELLED'] } },
+      { $unset: { assignedTo: 1 } },
+    );
+    // 2. Clean up leaves for deleted employee
+    await this.leaveModel.deleteMany({ employee: new Types.ObjectId(id) });
+    // 3. Remove user record
     const res = await this.userModel.findByIdAndDelete(id);
     if (!res) throw new NotFoundException('User not found');
   }

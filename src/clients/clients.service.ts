@@ -41,8 +41,10 @@ export class ClientsService {
 
     const role = String(user?.role || '').toLowerCase().trim();
     const isAdmin = role === 'admin' || role === 'management' || role === 'super_admin';
+    const isSales = role === 'sales';
 
-    if (!isAdmin) {
+    // Sales reps are scoped to their portfolio, but technical/employee staff can view clients for project coordination
+    if (isSales && !isAdmin) {
       const uId = user?._id ? user._id.toString() : user?.id ? user.id.toString() : user?.sub ? user.sub.toString() : '';
       if (uId && Types.ObjectId.isValid(uId)) {
         const uObjId = new Types.ObjectId(uId);
@@ -56,8 +58,6 @@ export class ClientsService {
             { accountManager: uId },
           ],
         });
-      } else {
-        conditions.push({ _id: null });
       }
     }
 
@@ -77,7 +77,7 @@ export class ClientsService {
     const filter = conditions.length > 0 ? (conditions.length === 1 ? conditions[0] : { $and: conditions }) : {};
 
     const skip = (Number(page) - 1) * Number(limit);
-    const [clients, total] = await Promise.all([
+    const [rawClients, total] = await Promise.all([
       this.clientModel
         .find(filter)
         .populate('assignedSales', 'name email')
@@ -88,6 +88,17 @@ export class ClientsService {
         .sort({ createdAt: -1 }),
       this.clientModel.countDocuments(filter),
     ]);
+
+    // Redact sensitive billing/financial totals for non-commercial staff
+    const canSeeCommercial = isAdmin || isSales;
+    const clients = rawClients.map(c => {
+      if (canSeeCommercial) return c;
+      const cObj = c.toObject ? c.toObject() : { ...c };
+      cObj.totalRevenue = 0;
+      cObj.totalBusiness = 0;
+      cObj.pendingAmount = 0;
+      return cObj as ClientDocument;
+    });
 
     return { clients, total };
   }
@@ -102,16 +113,16 @@ export class ClientsService {
 
     const role = String(user?.role || '').toLowerCase().trim();
     const isAdmin = role === 'admin' || role === 'management' || role === 'super_admin';
+    const isSales = role === 'sales';
+    const canSeeCommercial = isAdmin || isSales;
 
-    if (!isAdmin) {
-      const uId = user?._id ? user._id.toString() : user?.id ? user.id.toString() : user?.sub ? user.sub.toString() : '';
-      const createdByStr = client.createdBy?.toString();
-      const assignedSalesStr = client.assignedSales?._id ? client.assignedSales._id.toString() : client.assignedSales?.toString();
-      const accountManagerStr = client.accountManager?.toString();
-
-      if (createdByStr !== uId && assignedSalesStr !== uId && accountManagerStr !== uId) {
-        throw new NotFoundException('Client not found');
-      }
+    // Redact financial balances for employees while allowing full access to contact details
+    if (!canSeeCommercial) {
+      const clientObj = client.toObject ? client.toObject() : { ...client };
+      clientObj.totalRevenue = 0;
+      clientObj.totalBusiness = 0;
+      clientObj.pendingAmount = 0;
+      return clientObj as any;
     }
 
     return client;

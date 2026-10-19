@@ -19,9 +19,38 @@ export class UpdateTaskStatusDto {
 
   @IsOptional()
   @IsString()
+  reviewerComment?: string;
+
+  @IsOptional()
+  @IsString()
   bugFixSummary?: string;
 
   @IsOptional()
   @IsString()
   bugFixCommitLink?: string;
+
+  @IsOptional()
+  @IsString()
+  blockedReason?: string;
+
+  @IsOptional()
+  @IsString()
+  reopenReason?: string;
+
+  @IsOptional()
+  @IsString()
+  completionEvidence?: string;
+
+  @IsOptional()
+  @IsString()
+  deliveryEvidence?: string;
+
+  @IsOptional()
+  @IsString()
+  publicationUrl?: string;
+
+  @IsOptional()
+  @IsString()
+  reviewerDecision?: string;
 }
+
