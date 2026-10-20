@@ -117,6 +117,10 @@ export class CreateInvoiceDto {
 
   @IsString()
   @IsOptional()
+  depositAccount?: string;
+
+  @IsString()
+  @IsOptional()
   lead?: string;
 }
 

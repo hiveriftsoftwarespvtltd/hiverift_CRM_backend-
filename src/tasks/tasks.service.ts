@@ -74,8 +74,13 @@ export class TasksService {
     }
   }
 
-  // Create Task (Personal, Department, Project, Cross-Dept, Deliverable)
+  // Create Task (Personal, Department, Project, Cross-Dept, Deliverable, Sales)
   async create(dto: CreateTaskDto, user: any): Promise<TaskDocument> {
+    const userRole = (user.role || '').toLowerCase();
+    const isSuperAdmin = [UserRole.ADMIN, UserRole.MANAGEMENT].includes(user.role) || ['admin', 'management', 'super_admin', 'superadmin'].includes(userRole);
+    const isDeptHead = Boolean(user.isDepartmentHead) || ['manager', 'head', 'lead'].includes(userRole);
+    const isSales = userRole === 'sales' || (user.department || '').toLowerCase() === 'sales' || dto.taskType === TaskType.SALES;
+
     const userId = user._id ? user._id.toString() : user.id;
     const userDept = user.department || user.role;
 
@@ -235,21 +240,34 @@ export class TasksService {
       }
       payload.assignedManager = new Types.ObjectId(userId);
     }
+    // Rule 3.8: SALES Task - Created by Sales team for new sales, client onboarding or dev assignments
+    else if (dto.taskType === TaskType.SALES) {
+      payload.department = dto.department || 'sales';
+      payload.status = TaskStatus.TODO;
+      payload.reviewRequired = false;
+      if (dto.assignedTo) {
+        payload.assignedTo = new Types.ObjectId(dto.assignedTo);
+      } else {
+        payload.assignedTo = new Types.ObjectId(userId);
+      }
+      payload.assignedManager = new Types.ObjectId(userId);
+    }
     // Rule 4: DEPARTMENT / PROJECT / DELIVERABLE Task
     else {
       if (dto.assignedTo) {
-        // Enforce department isolation: Manager can assign within own department
+        // Enforce department isolation: Manager can assign within own department, Sales can assign dev tasks for deals
         const assignee = await this.userModel.findById(dto.assignedTo);
         if (!assignee) throw new NotFoundException('Assigned employee not found');
 
         const isSuperAdmin = [UserRole.ADMIN, UserRole.MANAGEMENT].includes(user.role) || ['admin', 'management', 'super_admin', 'superadmin'].includes((user.role || '').toLowerCase());
         const isDeptHead = Boolean(user.isDepartmentHead) || ['manager', 'head', 'lead'].includes((user.role || '').toLowerCase());
+        const isSales = userRole === 'sales' || (userDept || '').toLowerCase() === 'sales' || dto.taskType === TaskType.SALES;
 
-        if (!isSuperAdmin && !isDeptHead && dto.assignedTo.toString() !== userId.toString()) {
+        if (!isSuperAdmin && !isDeptHead && !isSales && dto.assignedTo.toString() !== userId.toString()) {
           throw new ForbiddenException('Regular employees and developers can only assign tasks to themselves');
         }
 
-        if (!isSuperAdmin && assignee.department && assignee.department.toLowerCase() !== userDept.toLowerCase()) {
+        if (!isSuperAdmin && !isSales && assignee.department && assignee.department.toLowerCase() !== userDept.toLowerCase()) {
           throw new ForbiddenException(
             `Cross-department direct assignment is prohibited. Use a Cross-Department Request instead to target ${assignee.department}.`
           );
@@ -512,6 +530,7 @@ export class TasksService {
       startDate,
       endDate,
       dateFilter,
+      dateType,
       page = 1,
       limit = 50,
     } = query;
@@ -579,6 +598,10 @@ export class TasksService {
         filter.status = { $in: [TaskStatus.DONE, TaskStatus.COMPLETED] };
       } else if (s === 'BLOCKED' || s === 'ON_HOLD') {
         filter.status = { $in: [TaskStatus.BLOCKED, TaskStatus.ON_HOLD] };
+      } else if (s === 'PENDING') {
+        filter.status = { $nin: [TaskStatus.DONE, TaskStatus.COMPLETED, TaskStatus.CANCELLED] };
+      } else if (s === 'CREATED') {
+        // Filter by created in the selected date window (status is any active or completed)
       } else {
         filter.status = s;
       }
@@ -597,7 +620,13 @@ export class TasksService {
       let end: Date | null = null;
       const now = new Date();
 
-      if (dateFilter === 'today') {
+      if (dateFilter === 'today' || dateFilter === 'due_today') {
+        start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+        end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+      } else if (dateFilter === 'yesterday') {
+        start = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 0, 0, 0);
+        end = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 23, 59, 59, 999);
+      } else if (dateFilter === 'created_today') {
         start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
         end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
       } else if (dateFilter === 'this_week') {
@@ -611,10 +640,16 @@ export class TasksService {
       } else if (dateFilter === 'this_year') {
         start = new Date(now.getFullYear(), 0, 1, 0, 0, 0);
         end = new Date(now.getFullYear(), 11, 31, 23, 59, 59, 999);
-      } else if (startDate || endDate) {
-        if (startDate) start = new Date(startDate);
+      } else if (dateFilter === 'custom' || startDate || endDate) {
+        if (startDate) {
+          start = new Date(startDate);
+          start.setHours(0, 0, 0, 0);
+        }
         if (endDate) {
           end = new Date(endDate);
+          end.setHours(23, 59, 59, 999);
+        } else if (startDate) {
+          end = new Date(startDate);
           end.setHours(23, 59, 59, 999);
         }
       }
@@ -624,9 +659,35 @@ export class TasksService {
         if (start) dateCond.$gte = start;
         if (end) dateCond.$lte = end;
         filter.$and = filter.$and || [];
-        filter.$and.push({
-          $or: [{ dueDate: dateCond }, { createdAt: dateCond }],
-        });
+
+        const isCreatedMode = dateFilter === 'created_today' || dateType === 'created' || status === 'CREATED';
+        const isCompletedMode = (status === 'COMPLETED' || status === 'DONE');
+        const isPendingMode = status === 'PENDING';
+        const isOverdueMode = status === 'OVERDUE' || overdue === 'true';
+        const isDueMode = (dateFilter === 'today' || dateFilter === 'due_today' || dateType === 'due') && !isCreatedMode && !isCompletedMode && !isPendingMode && !isOverdueMode;
+
+        if (isCreatedMode) {
+          filter.$and.push({ createdAt: dateCond });
+        } else if (isCompletedMode) {
+          filter.$and.push({
+            $or: [
+              { completedAt: dateCond },
+              { completedAt: null, updatedAt: dateCond },
+            ],
+          });
+        } else if (isPendingMode) {
+          if (end) {
+            filter.$and.push({ createdAt: { $lte: end } });
+          }
+        } else if (isOverdueMode) {
+          // Overdue condition (dueDate < now) is already applied in base filter
+        } else if (isDueMode) {
+          filter.$and.push({ dueDate: dateCond });
+        } else {
+          filter.$and.push({
+            $or: [{ dueDate: dateCond }, { createdAt: dateCond }],
+          });
+        }
       }
     }
 
@@ -1034,19 +1095,22 @@ export class TasksService {
 
     const uId = (user._id ? user._id.toString() : user.id).toString();
     const userRole = (user.role || '').toLowerCase();
-    const userDept = (user.department || userRole).toLowerCase();
     const isSuperAdmin = [UserRole.ADMIN, UserRole.MANAGEMENT].includes(user.role) || ['admin', 'management', 'super_admin', 'superadmin'].includes(userRole);
     const isDeptHead = Boolean(user.isDepartmentHead) || ['manager', 'head', 'lead'].includes(userRole);
+    const isCreator = task.createdBy?.toString() === uId;
+    const isSales = userRole === 'sales' || (user.department || '').toLowerCase() === 'sales' || task.taskType === TaskType.SALES;
 
-    const isOwner = task.createdBy?.toString() === uId;
-    const isAssignee = task.assignedTo?.toString() === uId;
-    const isDeptMatch = (task.department || '').toLowerCase() === userDept;
-
-    if (!isSuperAdmin && !isOwner && !isAssignee && !(isDeptHead && isDeptMatch)) {
-      throw new ForbiddenException('You do not have permission to modify this task');
+    if (!isSuperAdmin && !isDeptHead && !isCreator && !isSales) {
+      throw new ForbiddenException('Only Administrators, Managers, Creators, or Sales can edit this task');
     }
 
     const payload = { ...dto };
+    if (dto.startDate !== undefined) {
+      payload.startDate = dto.startDate ? new Date(dto.startDate) : null;
+    }
+    if (dto.dueDate !== undefined) {
+      payload.dueDate = new Date(dto.dueDate);
+    }
     if (dto.project && Types.ObjectId.isValid(dto.project)) payload.project = new Types.ObjectId(dto.project);
     if (dto.client !== undefined) {
       if (dto.client && Types.ObjectId.isValid(dto.client)) {
@@ -1088,15 +1152,11 @@ export class TasksService {
     const task = await this.taskModel.findById(id);
     if (!task) throw new NotFoundException('Task not found');
 
-    const uId = (user._id ? user._id.toString() : user.id).toString();
     const userRole = (user.role || '').toLowerCase();
-    const userDept = (user.department || userRole).toLowerCase();
     const isSuperAdmin = [UserRole.ADMIN, UserRole.MANAGEMENT].includes(user.role) || ['admin', 'management', 'super_admin', 'superadmin'].includes(userRole);
-    const isDeptHead = Boolean(user.isDepartmentHead) || ['manager', 'head', 'lead'].includes(userRole);
-    const isCreator = task.createdBy?.toString() === uId;
 
-    if (!isSuperAdmin && !isCreator && !(isDeptHead && (task.department || '').toLowerCase() === userDept)) {
-      throw new ForbiddenException('Only Administrators, Department Heads, or the task creator can delete this task');
+    if (!isSuperAdmin) {
+      throw new ForbiddenException('Only Administrators can delete tasks');
     }
 
     await this.taskModel.findByIdAndDelete(id);
@@ -1372,17 +1432,132 @@ export class TasksService {
   }
 
   // Workflow 7: Get audit-logged time entries for task or project
-  async getTimeEntries(taskId?: string, projectId?: string): Promise<TimeEntryDocument[]> {
+  async getTimeEntries(
+    taskId?: string,
+    projectId?: string,
+    userId?: string,
+    dateFilter?: string,
+    startDate?: string,
+    endDate?: string,
+    user?: any,
+  ): Promise<TimeEntryDocument[]> {
     const filter: any = {};
     if (taskId && Types.ObjectId.isValid(taskId)) filter.task = new Types.ObjectId(taskId);
     if (projectId && Types.ObjectId.isValid(projectId)) filter.project = new Types.ObjectId(projectId);
+    if (userId && Types.ObjectId.isValid(userId)) filter.user = new Types.ObjectId(userId);
+
+    if (user && !taskId && !projectId) {
+      const userRole = (user.role || '').toLowerCase();
+      const isSuperAdmin = [UserRole.ADMIN, UserRole.MANAGEMENT].includes(user.role) || ['admin', 'management', 'super_admin', 'superadmin'].includes(userRole);
+      if (!isSuperAdmin && !userId) {
+        const uId = user._id ? user._id.toString() : user.id;
+        filter.user = new Types.ObjectId(uId);
+      }
+    }
+
+    if (dateFilter || startDate || endDate) {
+      let start: Date | null = null;
+      let end: Date | null = null;
+      const now = new Date();
+
+      if (dateFilter === 'today') {
+        start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
+        end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+      } else if (dateFilter === 'this_week') {
+        const day = now.getDay();
+        const diff = now.getDate() - day + (day === 0 ? -6 : 1);
+        start = new Date(now.getFullYear(), now.getMonth(), diff, 0, 0, 0);
+        end = new Date(now.getFullYear(), now.getMonth(), diff + 6, 23, 59, 59, 999);
+      } else if (dateFilter === 'this_month') {
+        start = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0);
+        end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+      } else if (startDate || endDate) {
+        if (startDate) start = new Date(startDate);
+        if (endDate) {
+          end = new Date(endDate);
+          end.setHours(23, 59, 59, 999);
+        }
+      }
+
+      if (start || end) {
+        filter.startTime = {};
+        if (start) filter.startTime.$gte = start;
+        if (end) filter.startTime.$lte = end;
+      }
+    }
 
     return this.timeEntryModel
       .find(filter)
       .populate('user', 'name email role department avatar')
-      .populate('task', 'title taskId status')
+      .populate('task', 'title taskId status priority dueDate actualHours')
       .populate('project', 'name projectId')
       .sort({ createdAt: -1 });
+  }
+
+  async deleteTimeEntry(id: string, user: any): Promise<void> {
+    const entry = await this.timeEntryModel.findById(id);
+    if (!entry) throw new NotFoundException('Time entry not found');
+
+    const userRole = (user.role || '').toLowerCase();
+    const isSuperAdmin = [UserRole.ADMIN, UserRole.MANAGEMENT].includes(user.role) || ['admin', 'management', 'super_admin', 'superadmin'].includes(userRole);
+    if (!isSuperAdmin && entry.user?.toString() !== (user._id || user.id).toString()) {
+      throw new ForbiddenException('Only Administrators can delete time entries');
+    }
+
+    if (entry.task && entry.durationSeconds > 0) {
+      const hoursToSubtract = Number((entry.durationSeconds / 3600).toFixed(4));
+      await this.taskModel.findByIdAndUpdate(entry.task, {
+        $inc: { actualHours: -hoursToSubtract },
+      });
+    }
+
+    await this.timeEntryModel.findByIdAndDelete(id);
+  }
+
+  // Manual Time Entry
+  async addManualTimeEntry(dto: any, user: any): Promise<any> {
+    const userId = user._id ? user._id.toString() : user.id;
+    const { taskId, hours = 0, minutes = 0, notes, date } = dto;
+    if (!taskId || !Types.ObjectId.isValid(taskId)) {
+      throw new BadRequestException('Valid Task ID is required');
+    }
+    const task = await this.taskModel.findById(taskId);
+    if (!task) throw new NotFoundException('Task not found');
+
+    const totalSeconds = (Math.max(0, Number(hours) || 0) * 3600) + (Math.max(0, Number(minutes) || 0) * 60);
+    if (totalSeconds <= 0) {
+      throw new BadRequestException('Duration must be greater than 0 minutes');
+    }
+
+    const entryDate = date ? new Date(date) : new Date();
+    const entry = await this.timeEntryModel.create({
+      user: new Types.ObjectId(userId),
+      task: task._id,
+      project: task.project,
+      startTime: entryDate,
+      endTime: new Date(entryDate.getTime() + totalSeconds * 1000),
+      durationSeconds: totalSeconds,
+      isLive: false,
+      source: 'manual',
+      notes: notes || 'Manual time logged',
+    });
+
+    const addedHours = totalSeconds / 3600;
+    task.actualHours = Number(((task.actualHours || 0) + addedHours).toFixed(2));
+    await task.save();
+
+    await this.logAudit(
+      task._id,
+      'MANUAL_TIME_LOGGED',
+      user,
+      undefined,
+      `${hours}h ${minutes}m`,
+      `Manually logged ${hours}h ${minutes}m: ${notes || 'No notes provided'}`,
+    );
+
+    return this.timeEntryModel.findById((entry as any)._id)
+      .populate('user', 'name email role department avatar')
+      .populate('task', 'title taskId status priority dueDate actualHours');
   }
 
   // Workflow 14: Overdue tasks and SLA risks trigger configured notifications
@@ -1575,12 +1750,49 @@ export class TasksService {
       baseFilter.department = new RegExp(`^${query.department}$`, 'i');
     }
 
+    if (query.assignedTo && Types.ObjectId.isValid(query.assignedTo)) {
+      baseFilter.assignedTo = new Types.ObjectId(query.assignedTo);
+    }
+
+    if (query.project && Types.ObjectId.isValid(query.project)) {
+      baseFilter.project = new Types.ObjectId(query.project);
+    }
+
     // Personal tasks are not counted in shared departmental commitments unless explicit scope
     const sharedFilter = { ...baseFilter, taskType: { $ne: TaskType.PERSONAL } };
 
     const now = new Date();
     const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0);
     const endOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+
+    const day = now.getDay();
+    const diff = now.getDate() - day + (day === 0 ? -6 : 1);
+    const startOfWeek = new Date(now.getFullYear(), now.getMonth(), diff, 0, 0, 0);
+    const endOfWeek = new Date(now.getFullYear(), now.getMonth(), diff + 6, 23, 59, 59, 999);
+
+    // Dynamic Period for Daily Review calculations
+    let periodStart = startOfToday;
+    let periodEnd = endOfToday;
+    const df = query.dateFilter || 'today';
+    if (df === 'yesterday') {
+      periodStart = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 0, 0, 0);
+      periodEnd = new Date(now.getFullYear(), now.getMonth(), now.getDate() - 1, 23, 59, 59, 999);
+    } else if (df === 'this_week') {
+      periodStart = startOfWeek;
+      periodEnd = endOfWeek;
+    } else if (df === 'custom' || query.startDate || query.endDate) {
+      if (query.startDate) {
+        periodStart = new Date(query.startDate);
+        periodStart.setHours(0, 0, 0, 0);
+      }
+      if (query.endDate) {
+        periodEnd = new Date(query.endDate);
+        periodEnd.setHours(23, 59, 59, 999);
+      } else if (query.startDate) {
+        periodEnd = new Date(query.startDate);
+        periodEnd.setHours(23, 59, 59, 999);
+      }
+    }
 
     const [
       totalActive,
@@ -1592,10 +1804,14 @@ export class TasksService {
       doneCount,
       overdueCount,
       dueTodayCount,
+      dueThisWeekCount,
+      createdTodayCount,
       unassignedCount,
       crossDeptCount,
       pendingApprovalsCount,
       personalTasksCount,
+      tasksCreatedCount,
+      tasksCompletedCount,
     ] = await Promise.all([
       this.taskModel.countDocuments({
         ...sharedFilter,
@@ -1638,6 +1854,15 @@ export class TasksService {
       this.taskModel.countDocuments({
         ...sharedFilter,
         status: { $nin: [TaskStatus.DONE, TaskStatus.COMPLETED, TaskStatus.CANCELLED] },
+        dueDate: { $gte: startOfWeek, $lte: endOfWeek },
+      }),
+      this.taskModel.countDocuments({
+        ...sharedFilter,
+        createdAt: { $gte: startOfToday, $lte: endOfToday },
+      }),
+      this.taskModel.countDocuments({
+        ...sharedFilter,
+        status: { $nin: [TaskStatus.DONE, TaskStatus.COMPLETED, TaskStatus.CANCELLED] },
         $or: [{ assignedTo: null }, { assignedTo: { $exists: false } }],
       }),
       this.taskModel.countDocuments({
@@ -1655,6 +1880,20 @@ export class TasksService {
         createdBy: new Types.ObjectId(uId),
         taskType: TaskType.PERSONAL,
       }),
+      // Daily Review 1: Tasks Created in Period
+      this.taskModel.countDocuments({
+        ...sharedFilter,
+        createdAt: { $gte: periodStart, $lte: periodEnd },
+      }),
+      // Daily Review 2: Tasks Completed in Period
+      this.taskModel.countDocuments({
+        ...sharedFilter,
+        status: { $in: [TaskStatus.DONE, TaskStatus.COMPLETED, 'done', 'completed', 'COMPLETED'] },
+        $or: [
+          { completedAt: { $gte: periodStart, $lte: periodEnd } },
+          { completedAt: null, updatedAt: { $gte: periodStart, $lte: periodEnd } },
+        ],
+      }),
     ]);
 
     return {
@@ -1667,10 +1906,18 @@ export class TasksService {
       done: doneCount,
       overdueTasks: overdueCount,
       dueToday: dueTodayCount,
+      dueThisWeek: dueThisWeekCount,
+      createdToday: createdTodayCount,
       unassignedTasks: unassignedCount,
       crossDeptRequests: crossDeptCount,
       pendingApprovals: pendingApprovalsCount,
       personalTasks: personalTasksCount,
+      // 5 Daily Review Summary metrics
+      tasksCreated: tasksCreatedCount,
+      tasksCompleted: tasksCompletedCount,
+      tasksPending: totalActive,
+      tasksInProgress: inProgressCount,
+      tasksOverdue: overdueCount,
     };
   }
 

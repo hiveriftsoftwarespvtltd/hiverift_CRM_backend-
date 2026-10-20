@@ -24,6 +24,7 @@ import { MetaModule } from './meta/meta.module';
 import { SettingsModule } from './settings/settings.module';
 import { TicketsModule } from './tickets/tickets.module';
 import { CapacityModule } from './capacity/capacity.module';
+import { AccountsModule } from './accounts/accounts.module';
 
 @Module({
   imports: [
@@ -67,6 +68,7 @@ import { CapacityModule } from './capacity/capacity.module';
     MetaModule,
     SettingsModule,
     CapacityModule,
+    AccountsModule,
   ],
 })
 export class AppModule {}

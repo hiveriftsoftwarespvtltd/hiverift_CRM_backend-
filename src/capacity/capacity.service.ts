@@ -143,7 +143,8 @@ export class CapacityService {
 
     // RBAC Scope Filter
     const userFilter: any = { isActive: true };
-    if (!isSuperAdmin && isDeptHead && userDept) {
+    const isSales = userRole === 'sales' || (user?.department || '').toLowerCase() === 'sales';
+    if (!isSuperAdmin && !isSales && isDeptHead && userDept && !filterDept) {
       userFilter.department = new RegExp(`^${userDept}$`, 'i');
     } else if (filterDept) {
       userFilter.department = new RegExp(filterDept, 'i');

@@ -94,6 +94,7 @@ export class LeadsService {
         existingClient.leadRef = lead._id;
         await existingClient.save();
       }
+      await this.leadModel.findByIdAndUpdate(lead._id, { clientRef: existingClient._id, isConverted: true });
       await this.quotationModel.updateMany({ lead: lead._id, client: { $exists: false } }, { client: existingClient._id });
       await this.paymentModel.updateMany({ lead: lead._id, client: { $exists: false } }, { client: existingClient._id });
       return existingClient;
@@ -120,6 +121,9 @@ export class LeadsService {
     });
 
     const savedClient = await newClient.save();
+
+    // Link lead to this newly converted client profile
+    await this.leadModel.findByIdAndUpdate(lead._id, { clientRef: savedClient._id, isConverted: true });
 
     // Link quotations & payments of this lead to the newly created client
     await this.quotationModel.updateMany({ lead: lead._id }, { $set: { client: savedClient._id } });
@@ -271,12 +275,12 @@ export class LeadsService {
       payload.status = LeadStatus.NEW;
     }
 
+    // Newly created / generated lead always starts in pipeline, never converted to client on generation
+    payload.isConverted = false;
+    delete payload.clientRef;
+
     const lead = new this.leadModel(payload);
     const saved = await lead.save();
-
-    if (saved.status === LeadStatus.WON) {
-      await this.autoCreateClientFromWonLead(saved, userId);
-    }
     return saved;
   }
 
@@ -400,16 +404,26 @@ export class LeadsService {
     return { leads, total };
   }
 
-  async findOne(id: string): Promise<LeadDocument> {
+  async findOne(id: string): Promise<any> {
     const lead = await this.leadModel
       .findById(id)
       .populate('assignedTo', 'name email role phone')
       .populate('createdBy', 'name email role')
+      .populate('clientRef', 'clientId name company email phone')
       .populate('followups.createdBy', 'name email role')
       .populate('notes.createdBy', 'name email role');
 
     if (!lead) throw new NotFoundException('Lead not found');
-    return lead;
+
+    const quotations = await this.quotationModel
+      .find({ lead: lead._id })
+      .select('quotationNo status totalAmount subtotal discount validUntil templateType createdAt updatedAt')
+      .sort({ createdAt: -1 })
+      .lean();
+
+    const obj = (lead.toObject ? lead.toObject() : lead) as any;
+    obj.quotations = quotations || [];
+    return obj;
   }
 
   async update(id: string, updateLeadDto: UpdateLeadDto, userId?: string, user?: any): Promise<LeadDocument> {
@@ -482,27 +496,63 @@ export class LeadsService {
     return lead;
   }
 
-  async updateStatus(id: string, status: string, lostReason?: string, userId?: string): Promise<LeadDocument> {
-    const update: any = { status };
-    if (lostReason) update.lostReason = lostReason;
-    const lead = await this.leadModel.findByIdAndUpdate(id, update, { new: true });
+  async updateStatus(id: string, status: string, lostReason?: string, userId?: string): Promise<any> {
+    const lead = await this.leadModel.findById(id);
     if (!lead) throw new NotFoundException('Lead not found');
+
+    const oldStatus = lead.status;
+    lead.status = status;
+    if (lostReason !== undefined) {
+      lead.lostReason = lostReason;
+    }
+    if (status !== LeadStatus.LOST && !lostReason) {
+      lead.lostReason = undefined as any;
+    }
+
+    // Auto-record stage change activity note
+    if (oldStatus !== status) {
+      const stageNote = status === LeadStatus.LOST
+        ? `Pipeline stage marked CLOSED LOST${lostReason ? ` - Reason: ${lostReason}` : ''}`
+        : status === LeadStatus.WON
+        ? `Pipeline stage marked CLOSED WON - Converted to Active Client`
+        : `Pipeline stage moved from ${oldStatus.toUpperCase()} to ${status.toUpperCase()}`;
+
+      lead.notes.push({
+        _id: new Types.ObjectId(),
+        text: stageNote,
+        createdBy: userId ? new Types.ObjectId(userId) : (undefined as any),
+        createdAt: new Date(),
+      } as any);
+    }
+
+    await lead.save();
 
     if (lead.status === LeadStatus.WON) {
       await this.autoCreateClientFromWonLead(lead, userId);
     }
 
-    return lead;
+    return this.findOne(id);
   }
 
-  async assign(id: string, assignedTo: string): Promise<LeadDocument> {
-    const lead = await this.leadModel.findByIdAndUpdate(
-      id,
-      { assignedTo: new Types.ObjectId(assignedTo), status: LeadStatus.ASSIGNED },
-      { new: true },
-    );
+  async assign(id: string, assignedTo: string, userId?: string): Promise<any> {
+    const lead = await this.leadModel.findById(id);
     if (!lead) throw new NotFoundException('Lead not found');
-    return lead;
+
+    const assignee = await this.userModel.findById(assignedTo).select('name email');
+    lead.assignedTo = new Types.ObjectId(assignedTo);
+    if (lead.status === LeadStatus.NEW) {
+      lead.status = LeadStatus.ASSIGNED;
+    }
+
+    lead.notes.push({
+      _id: new Types.ObjectId(),
+      text: `Lead assigned to ${assignee?.name || 'Sales Representative'}`,
+      createdBy: userId ? new Types.ObjectId(userId) : (undefined as any),
+      createdAt: new Date(),
+    } as any);
+
+    await lead.save();
+    return this.findOne(id);
   }
 
   async addFollowup(id: string, createFollowupDto: CreateFollowupDto, userId: string): Promise<LeadDocument> {

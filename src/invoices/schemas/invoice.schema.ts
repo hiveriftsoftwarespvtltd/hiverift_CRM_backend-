@@ -100,6 +100,9 @@ export class Invoice {
   @Prop({ type: Types.ObjectId, ref: 'Client' })
   client: Types.ObjectId;
 
+  @Prop({ type: Types.ObjectId, ref: 'CompanyAccount' })
+  depositAccount: Types.ObjectId;
+
   @Prop({ type: Types.ObjectId, ref: 'Lead' })
   lead: Types.ObjectId;
 

@@ -3,6 +3,7 @@ import { QuotationsService } from './quotations.service';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { Public } from '../common/decorators/public.decorator';
 
 @Controller('quotations')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -14,16 +15,58 @@ export class QuotationsController {
     const q = await this.quotationsService.create(dto, user._id.toString(), user.role);
     return { message: 'Quotation created', data: q };
   }
+
   @Get()
   async findAll(@Query() query: any, @CurrentUser() user: any) {
     const result = await this.quotationsService.findAll(query, user);
     return { message: 'Quotations fetched', data: result };
   }
 
+  // ==========================================
+  // Public Client Portal Endpoints
+  // ==========================================
+  @Public()
+  @Get('public/:id')
+  async getPublicProposal(@Param('id') id: string) {
+    const proposal = await this.quotationsService.getPublicQuotation(id);
+    return { success: true, message: 'Proposal fetched', data: proposal };
+  }
+
+  @Public()
+  @Post('public/:id/accept')
+  async acceptPublicProposal(@Param('id') id: string, @Body() body: { notes?: string }) {
+    const result = await this.quotationsService.acceptPublicProposal(id, body.notes);
+    return { success: true, message: result.message, data: result };
+  }
+
+  @Public()
+  @Post('public/:id/request-changes')
+  async requestChangesPublic(@Param('id') id: string, @Body() body: { feedback: string }) {
+    const result = await this.quotationsService.requestChangesPublic(id, body.feedback || 'Revision requested');
+    return { success: true, message: result.message, data: result };
+  }
+
   @Get(':id')
   async findOne(@Param('id') id: string, @CurrentUser() user: any) {
     const q = await this.quotationsService.findOne(id, user);
     return { message: 'Quotation fetched', data: q };
+  }
+
+  @Get(':id/versions')
+  async getVersions(@Param('id') id: string) {
+    const versions = await this.quotationsService.getVersionHistory(id);
+    return { message: 'Version history fetched', data: versions };
+  }
+
+  @Post(':id/create-revision')
+  async createRevision(@Param('id') id: string, @Body() body: any, @CurrentUser() user: any) {
+    const revision = await this.quotationsService.createRevision(
+      id,
+      body,
+      user._id.toString(),
+      user.role,
+    );
+    return { message: `Quotation revision ${revision.quotationNo} created successfully`, data: revision };
   }
 
   @Put(':id')

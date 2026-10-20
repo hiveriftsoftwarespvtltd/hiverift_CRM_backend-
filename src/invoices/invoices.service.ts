@@ -2,6 +2,8 @@ import { Injectable, NotFoundException, BadRequestException } from '@nestjs/comm
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Invoice, InvoiceDocument } from './schemas/invoice.schema';
+import { CompanyAccount, CompanyAccountDocument } from '../accounts/schemas/account.schema';
+import { AccountTransaction, AccountTransactionDocument, TransactionType } from '../accounts/schemas/transaction.schema';
 import { CreateInvoiceDto, SendInvoiceEmailDto } from './dto/create-invoice.dto';
 import { MailService } from '../common/services/mail.service';
 
@@ -9,8 +11,20 @@ import { MailService } from '../common/services/mail.service';
 export class InvoicesService {
   constructor(
     @InjectModel(Invoice.name) private invoiceModel: Model<InvoiceDocument>,
+    @InjectModel(CompanyAccount.name) private accountModel: Model<CompanyAccountDocument>,
+    @InjectModel(AccountTransaction.name) private transactionModel: Model<AccountTransactionDocument>,
     private mailService: MailService,
   ) {}
+
+  private async getTargetAccount(accountId?: string): Promise<CompanyAccountDocument | null> {
+    if (accountId && Types.ObjectId.isValid(accountId)) {
+      const acc = await this.accountModel.findById(accountId);
+      if (acc) return acc;
+    }
+    const defaultAcc = await this.accountModel.findOne({ isDefault: true });
+    if (defaultAcc) return defaultAcc;
+    return this.accountModel.findOne({ isActive: true });
+  }
 
   private calculateAmounts(dto: any) {
     const items = (dto.items || []).map((item) => {
@@ -85,11 +99,42 @@ export class InvoicesService {
       invoiceNo,
       ...calculated,
       createdBy: new Types.ObjectId(userId),
-      client: dto.client ? new Types.ObjectId(dto.client) : undefined,
-      lead: dto.lead ? new Types.ObjectId(dto.lead) : undefined,
+      client: dto.client && Types.ObjectId.isValid(dto.client) ? new Types.ObjectId(dto.client) : undefined,
+      lead: dto.lead && Types.ObjectId.isValid(dto.lead) ? new Types.ObjectId(dto.lead) : undefined,
+      depositAccount: dto.depositAccount && Types.ObjectId.isValid(dto.depositAccount) ? new Types.ObjectId(dto.depositAccount) : undefined,
     });
 
-    return newInvoice.save();
+    const saved = await newInvoice.save();
+
+    // If an initial payment was received upon creation, deposit it into the company account and record an income transaction
+    if (saved.amountPaid > 0) {
+      const targetAcc = await this.getTargetAccount(dto.depositAccount);
+      if (targetAcc) {
+        targetAcc.currentBalance += saved.amountPaid;
+        await targetAcc.save();
+
+        saved.depositAccount = targetAcc._id as any;
+        await saved.save();
+
+        const txn = new this.transactionModel({
+          type: TransactionType.INCOME,
+          category: 'client_payment',
+          amount: saved.amountPaid,
+          account: targetAcc._id,
+          invoice: saved._id,
+          client: saved.client,
+          date: saved.date || new Date(),
+          paymentMethod: 'bank_transfer',
+          referenceNo: saved.invoiceNo,
+          payeeOrPayer: saved.billTo?.split('\n')[0] || 'Client',
+          description: `Initial payment received for Invoice #${saved.invoiceNo}`,
+          createdBy: new Types.ObjectId(userId),
+        });
+        await txn.save();
+      }
+    }
+
+    return saved;
   }
 
   async findAll(query: any, user: any): Promise<{ invoices: any[]; total: number }> {
@@ -138,25 +183,133 @@ export class InvoicesService {
     return invoice;
   }
 
-  async update(id: string, dto: Partial<CreateInvoiceDto>): Promise<InvoiceDocument> {
+  async update(id: string, dto: Partial<CreateInvoiceDto>, userId?: string): Promise<InvoiceDocument> {
     const invoice = await this.invoiceModel.findById(id);
     if (!invoice) throw new NotFoundException('Invoice not found');
 
+    const oldAmountPaid = Number(invoice.amountPaid) || 0;
     const calculated = this.calculateAmounts({ ...invoice.toObject(), ...dto });
+    const newAmountPaid = Number(calculated.amountPaid) || 0;
+    const diff = newAmountPaid - oldAmountPaid;
+
+    if (diff !== 0) {
+      const targetAcc = await this.getTargetAccount(dto.depositAccount || (invoice.depositAccount ? invoice.depositAccount.toString() : undefined));
+      if (targetAcc) {
+        targetAcc.currentBalance += diff;
+        await targetAcc.save();
+
+        if (diff > 0) {
+          const txn = new this.transactionModel({
+            type: TransactionType.INCOME,
+            category: 'client_payment',
+            amount: diff,
+            account: targetAcc._id,
+            invoice: invoice._id,
+            client: dto.client && Types.ObjectId.isValid(dto.client) ? new Types.ObjectId(dto.client) : invoice.client,
+            date: new Date(),
+            paymentMethod: 'bank_transfer',
+            referenceNo: invoice.invoiceNo,
+            payeeOrPayer: (dto.billTo || invoice.billTo)?.split('\n')[0] || 'Client',
+            description: `Payment update received for Invoice #${invoice.invoiceNo}`,
+            createdBy: userId && Types.ObjectId.isValid(userId) ? new Types.ObjectId(userId) : invoice.createdBy,
+          });
+          await txn.save();
+        }
+      }
+    }
 
     Object.assign(invoice, {
       ...dto,
       ...calculated,
-      client: dto.client ? new Types.ObjectId(dto.client) : invoice.client,
-      lead: dto.lead ? new Types.ObjectId(dto.lead) : invoice.lead,
+      client: dto.client && Types.ObjectId.isValid(dto.client) ? new Types.ObjectId(dto.client) : invoice.client,
+      lead: dto.lead && Types.ObjectId.isValid(dto.lead) ? new Types.ObjectId(dto.lead) : invoice.lead,
+      depositAccount: dto.depositAccount && Types.ObjectId.isValid(dto.depositAccount) ? new Types.ObjectId(dto.depositAccount) : invoice.depositAccount,
     });
 
     return invoice.save();
   }
 
+  async recordPayment(
+    id: string,
+    paymentDto: {
+      amount: number;
+      accountId?: string;
+      paymentMethod?: string;
+      referenceNo?: string;
+      notes?: string;
+      date?: string;
+    },
+    userId: string,
+  ): Promise<any> {
+    const invoice = await this.invoiceModel.findById(id);
+    if (!invoice) throw new NotFoundException('Invoice not found');
+
+    const paymentAmount = Number(paymentDto.amount);
+    if (!paymentAmount || paymentAmount <= 0) {
+      throw new BadRequestException('Payment amount must be greater than zero');
+    }
+
+    const targetAcc = await this.getTargetAccount(paymentDto.accountId || (invoice.depositAccount ? invoice.depositAccount.toString() : undefined));
+    if (!targetAcc) throw new NotFoundException('Company operating account not found');
+
+    // Credit company account balance
+    targetAcc.currentBalance += paymentAmount;
+    await targetAcc.save();
+
+    // Update invoice paid & balance due
+    invoice.amountPaid = (Number(invoice.amountPaid) || 0) + paymentAmount;
+    invoice.balanceDue = Math.max(0, invoice.total - invoice.amountPaid);
+    if (invoice.balanceDue === 0) {
+      invoice.status = 'paid';
+    } else {
+      invoice.status = 'partially_paid';
+    }
+    invoice.depositAccount = targetAcc._id as any;
+    await invoice.save();
+
+    // Record income transaction in Accounts ledger
+    const txn = new this.transactionModel({
+      type: TransactionType.INCOME,
+      category: 'client_payment',
+      amount: paymentAmount,
+      account: targetAcc._id,
+      invoice: invoice._id,
+      client: invoice.client,
+      date: paymentDto.date ? new Date(paymentDto.date) : new Date(),
+      paymentMethod: paymentDto.paymentMethod || 'bank_transfer',
+      referenceNo: paymentDto.referenceNo || invoice.invoiceNo,
+      payeeOrPayer: invoice.billTo?.split('\n')[0] || 'Client',
+      description: paymentDto.notes || `Payment received for Invoice #${invoice.invoiceNo}`,
+      createdBy: new Types.ObjectId(userId),
+    });
+    const savedTxn = await txn.save();
+
+    return {
+      invoice,
+      transaction: savedTxn,
+      account: {
+        _id: targetAcc._id,
+        name: targetAcc.name,
+        currentBalance: targetAcc.currentBalance,
+      },
+    };
+  }
+
   async delete(id: string): Promise<void> {
-    const res = await this.invoiceModel.findByIdAndDelete(id);
-    if (!res) throw new NotFoundException('Invoice not found');
+    const invoice = await this.invoiceModel.findById(id);
+    if (!invoice) throw new NotFoundException('Invoice not found');
+
+    // Reverse any linked transactions in accounts
+    const linkedTxns = await this.transactionModel.find({ invoice: new Types.ObjectId(id) });
+    for (const txn of linkedTxns) {
+      const acc = await this.accountModel.findById(txn.account);
+      if (acc) {
+        acc.currentBalance -= txn.amount;
+        await acc.save();
+      }
+    }
+    await this.transactionModel.deleteMany({ invoice: new Types.ObjectId(id) });
+    await this.invoiceModel.findByIdAndDelete(id);
   }
 
   async sendEmail(id: string, emailDto: SendInvoiceEmailDto): Promise<{ message: string; success: boolean }> {

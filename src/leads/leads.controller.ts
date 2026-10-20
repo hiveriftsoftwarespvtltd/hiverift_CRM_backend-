@@ -95,15 +95,19 @@ export class LeadsController {
 
   @Put(':id/status')
   @Roles('admin', 'management', 'sales')
-  async updateStatus(@Param('id') id: string, @Body() body: { status: LeadStatus }, @CurrentUser() user: any) {
-    const lead = await this.leadsService.updateStatus(id, body.status, undefined, user?._id?.toString());
+  async updateStatus(
+    @Param('id') id: string,
+    @Body() body: { status: LeadStatus; lostReason?: string },
+    @CurrentUser() user: any,
+  ) {
+    const lead = await this.leadsService.updateStatus(id, body.status, body.lostReason, user?._id?.toString());
     return { message: 'Lead status updated', data: lead };
   }
 
   @Put(':id/assign')
   @Roles('admin', 'management')
-  async assign(@Param('id') id: string, @Body() body: { assignedTo: string }) {
-    const lead = await this.leadsService.assign(id, body.assignedTo);
+  async assign(@Param('id') id: string, @Body() body: { assignedTo: string }, @CurrentUser() user: any) {
+    const lead = await this.leadsService.assign(id, body.assignedTo, user?._id?.toString());
     return { message: 'Lead assigned successfully', data: lead };
   }
 

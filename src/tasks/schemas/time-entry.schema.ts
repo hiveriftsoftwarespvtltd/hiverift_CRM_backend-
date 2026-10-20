@@ -36,6 +36,9 @@ export class TimeEntry {
 
   @Prop({ default: false })
   isLive: boolean;
+
+  @Prop({ default: 'live_timer' })
+  source: string;
 }
 
 export const TimeEntrySchema = SchemaFactory.createForClass(TimeEntry);

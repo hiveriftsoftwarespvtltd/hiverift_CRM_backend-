@@ -1,27 +1,59 @@
-import { Injectable, NotFoundException, BadRequestException, ForbiddenException } from '@nestjs/common';
+import { Injectable, NotFoundException, BadRequestException, ForbiddenException, OnModuleInit } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Quotation, QuotationDocument } from './schemas/quotation.schema';
 import { Payment, PaymentDocument } from '../payments/schemas/payment.schema';
 import { Lead, LeadDocument } from '../leads/schemas/lead.schema';
+import { User, UserDocument } from '../users/schemas/user.schema';
 import { MailService } from '../common/services/mail.service';
+import { NotificationsService } from '../notifications/notifications.service';
 
 @Injectable()
-export class QuotationsService {
+export class QuotationsService implements OnModuleInit {
   constructor(
     @InjectModel(Quotation.name) private quotationModel: Model<QuotationDocument>,
     @InjectModel(Payment.name) private paymentModel: Model<PaymentDocument>,
     @InjectModel(Lead.name) private leadModel: Model<LeadDocument>,
+    @InjectModel(User.name) private userModel: Model<UserDocument>,
     private mailService: MailService,
+    private notificationsService: NotificationsService,
   ) {}
 
-  private async generateQuotationNo(): Promise<string> {
+  async onModuleInit() {
+    // One-time self-healing migration for existing unversioned quotations
+    try {
+      const unversioned = await this.quotationModel.find({
+        $or: [
+          { version: { $exists: false } },
+          { isLatest: { $exists: false } },
+          { rootQuotationNo: { $exists: false } },
+        ],
+      });
+      if (unversioned.length > 0) {
+        for (const q of unversioned) {
+          if (!q.rootQuotationNo) {
+            const match = (q.quotationNo || '').match(/^(QUO-\d+-\d+)/i);
+            q.rootQuotationNo = match ? match[1].toUpperCase() : q.quotationNo;
+          }
+          if (!q.version) q.version = 1;
+          if (q.isLatest === undefined) q.isLatest = true;
+          await q.save();
+        }
+        console.log(`[QuotationsService] Migrated ${unversioned.length} legacy quotations to versioning schema.`);
+      }
+    } catch (e) {
+      console.error('[QuotationsService] Migration check error:', e);
+    }
+  }
+
+  private async generateQuotationNo(): Promise<{ quotationNo: string; rootQuotationNo: string }> {
     const year = new Date().getFullYear();
-    const quotations = await this.quotationModel.find({}, { quotationNo: 1 }).lean();
+    const quotations = await this.quotationModel.find({}, { quotationNo: 1, rootQuotationNo: 1 }).lean();
     let maxNum = 0;
     for (const q of quotations) {
-      if (q.quotationNo) {
-        const match = q.quotationNo.match(/QUO-\d+-(\d+)/i);
+      const candidate = q.rootQuotationNo || q.quotationNo;
+      if (candidate) {
+        const match = candidate.match(/QUO-\d+-(\d+)/i);
         if (match) {
           const num = parseInt(match[1], 10);
           if (!isNaN(num) && num > maxNum) {
@@ -31,10 +63,62 @@ export class QuotationsService {
       }
     }
     let nextNum = maxNum + 1;
-    while (await this.quotationModel.findOne({ quotationNo: `QUO-${year}-${String(nextNum).padStart(4, '0')}` })) {
+    while (
+      await this.quotationModel.findOne({
+        $or: [
+          { quotationNo: `QUO-${year}-${String(nextNum).padStart(4, '0')}` },
+          { quotationNo: `QUO-${year}-${String(nextNum).padStart(4, '0')}-V1` },
+          { rootQuotationNo: `QUO-${year}-${String(nextNum).padStart(4, '0')}` },
+        ],
+      })
+    ) {
       nextNum++;
     }
-    return `QUO-${year}-${String(nextNum).padStart(4, '0')}`;
+    const root = `QUO-${year}-${String(nextNum).padStart(4, '0')}`;
+    return { quotationNo: `${root}-V1`, rootQuotationNo: root };
+  }
+
+  private async notifyAdminsAboutQuotation(quotation: QuotationDocument, salesUserId: string, title: string) {
+    try {
+      const salesUser = await this.userModel.findById(salesUserId).select('name email');
+      const salesName = salesUser?.name || 'Sales Representative';
+      const admins = await this.userModel.find({ role: { $in: ['admin', 'superadmin', 'management'] } }).select('_id');
+
+      for (const admin of admins) {
+        await this.notificationsService.create({
+          userId: admin._id.toString(),
+          title,
+          message: `${salesName} submitted Quotation ${quotation.quotationNo} (₹${quotation.totalAmount?.toLocaleString('en-IN')}) for approval.`,
+          type: 'quotation',
+          module: 'quotations',
+          referenceId: quotation._id.toString(),
+        });
+      }
+    } catch (err) {
+      console.error('Failed to dispatch quotation notification to admins:', err);
+    }
+  }
+
+  private async notifySalesAboutApproval(quotation: QuotationDocument, approved: boolean, reason?: string) {
+    try {
+      if (!quotation.createdBy) return;
+      const salesUserId = (quotation.createdBy as any)._id
+        ? (quotation.createdBy as any)._id.toString()
+        : quotation.createdBy.toString();
+
+      await this.notificationsService.create({
+        userId: salesUserId,
+        title: approved ? 'Quotation Approved' : 'Quotation Approval Rejected',
+        message: approved
+          ? `SuperAdmin approved Quotation ${quotation.quotationNo}. You can now send it to the client.`
+          : `SuperAdmin rejected Quotation ${quotation.quotationNo}. Reason: "${reason || 'Requires revision'}"`,
+        type: 'quotation',
+        module: 'quotations',
+        referenceId: quotation._id.toString(),
+      });
+    } catch (err) {
+      console.error('Failed to notify sales user about quotation approval:', err);
+    }
   }
 
   private async syncQuotationPayment(quotation: QuotationDocument, userId?: string) {
@@ -59,17 +143,16 @@ export class QuotationsService {
       }
 
       if (!isWonOrApproved) {
-        return; // Skip payment creation for interested/new/contacted leads
+        return; // Skip payment creation for unapproved/prospect quotations
       }
 
-      // Find if payment ledger already exists for this quotation or client
+      // Find if payment ledger already exists for this quotation or root quotation
       let payment = await this.paymentModel.findOne({ quotation: quotation._id });
       if (!payment && quotation.client) {
         payment = await this.paymentModel.findOne({ client: quotation.client, quotation: { $exists: false } });
       }
 
       if (payment) {
-        // Update invoice amount & recalculate pending
         payment.invoiceAmount = quotation.totalAmount;
         payment.pendingAmount = Math.max(0, quotation.totalAmount - (payment.receivedAmount || 0));
         if (payment.receivedAmount >= quotation.totalAmount && quotation.totalAmount > 0) {
@@ -84,7 +167,6 @@ export class QuotationsService {
         if (quotation.lead) (payment as any).lead = quotation.lead;
         await payment.save();
       } else {
-        // Create new auto-linked Payment receipt ledger
         const year = new Date().getFullYear();
         const lastDoc = await this.paymentModel
           .findOne({ paymentNo: { $regex: new RegExp(`^PAY-${year}-\\d+$`) } })
@@ -122,12 +204,15 @@ export class QuotationsService {
   }
 
   async create(dto: any, userId: string, userRole?: string): Promise<QuotationDocument> {
-    const quotationNo = await this.generateQuotationNo();
+    const { quotationNo, rootQuotationNo } = await this.generateQuotationNo();
     const initialStatus = dto.status || (userRole === 'sales' ? 'pending_approval' : 'draft');
     const payload: any = {
       ...dto,
       status: initialStatus,
       quotationNo,
+      rootQuotationNo,
+      version: 1,
+      isLatest: true,
       createdBy: new Types.ObjectId(userId),
     };
     if (userRole === 'sales' || initialStatus === 'pending_approval') {
@@ -139,32 +224,129 @@ export class QuotationsService {
     const quotation = new this.quotationModel(payload);
     const saved = await quotation.save();
 
-    // Auto-sync into Payments collection
+    // Auto-sync into Payments collection if already approved
     await this.syncQuotationPayment(saved, userId);
+
+    // If sales role created it in pending_approval, notify admins
+    if (userRole === 'sales' || initialStatus === 'pending_approval') {
+      await this.notifyAdminsAboutQuotation(saved, userId, `New Quotation ${saved.quotationNo} Submitted for Approval`);
+    }
 
     return saved;
   }
 
+  async createRevision(
+    id: string,
+    dto: { revisionReason?: string; discount?: number; notes?: string; services?: any[] },
+    userId: string,
+    userRole?: string,
+  ): Promise<QuotationDocument> {
+    const prev = await this.quotationModel.findById(id);
+    if (!prev) throw new NotFoundException('Quotation not found');
+
+    const root = prev.rootQuotationNo || prev.quotationNo.replace(/-V\d+$/i, '');
+    const currentVersion = prev.version || 1;
+    const nextVersion = currentVersion + 1;
+    const newQuotationNo = `${root}-V${nextVersion}`;
+
+    // Mark previous versions for this root as isLatest = false
+    await this.quotationModel.updateMany({ rootQuotationNo: root }, { isLatest: false });
+    if (prev.status !== 'accepted' && prev.status !== 'won') {
+      prev.status = 'superseded';
+      prev.isLatest = false;
+      await prev.save();
+    }
+
+    const prevObj: any = prev.toObject ? prev.toObject() : { ...prev };
+    delete prevObj._id;
+    delete prevObj.createdAt;
+    delete prevObj.updatedAt;
+    delete prevObj.__v;
+
+    const initialStatus = userRole === 'sales' ? 'pending_approval' : 'draft';
+
+    const newQuotation = new this.quotationModel({
+      ...prevObj,
+      rootQuotationNo: root,
+      quotationNo: newQuotationNo,
+      version: nextVersion,
+      parentQuotation: prev._id,
+      isLatest: true,
+      status: initialStatus,
+      revisionReason: dto.revisionReason || `Revision V${nextVersion} created for negotiation`,
+      approvalRequestedAt: userRole === 'sales' || initialStatus === 'pending_approval' ? new Date() : undefined,
+      approvedAt: undefined,
+      approvedBy: undefined,
+      rejectionReason: undefined,
+      sentAt: undefined,
+      viewedAt: undefined,
+      clientAcceptedAt: undefined,
+      clientAcceptedNotes: undefined,
+      clientFeedback: undefined,
+      createdBy: new Types.ObjectId(userId),
+      ...(dto.services ? { services: dto.services } : {}),
+      ...(dto.discount !== undefined ? { discount: Number(dto.discount) } : {}),
+      ...(dto.notes !== undefined ? { notes: dto.notes } : {}),
+    });
+
+    const saved = await newQuotation.save();
+
+    if (userRole === 'sales' || initialStatus === 'pending_approval') {
+      await this.notifyAdminsAboutQuotation(saved, userId, `Quotation Revision ${newQuotationNo} Submitted for Approval`);
+    }
+
+    return this.findOne(saved._id.toString());
+  }
+
+  async getVersionHistory(id: string): Promise<QuotationDocument[]> {
+    const q = await this.quotationModel.findById(id);
+    if (!q) throw new NotFoundException('Quotation not found');
+
+    const root = q.rootQuotationNo || q.quotationNo.replace(/-V\d+$/i, '');
+    const versions = await this.quotationModel
+      .find({
+        $or: [
+          { rootQuotationNo: root },
+          { quotationNo: { $regex: new RegExp(`^${root}(-V\\d+)?$`, 'i') } },
+        ],
+      })
+      .populate('createdBy', 'name email role')
+      .populate('approvedBy', 'name email role')
+      .sort({ version: -1, createdAt: -1 });
+
+    return versions;
+  }
+
   async findAll(query: any, user?: any): Promise<{ quotations: QuotationDocument[]; total: number }> {
-    const { status, lead, client, page = 1, limit = 20, search } = query;
+    const { status, lead, client, page = 1, limit = 20, search, onlyLatest = 'true' } = query;
     const filter: any = {};
     if (status && status !== 'all') filter.status = status;
     if (lead) filter.lead = new Types.ObjectId(lead);
     if (client) filter.client = new Types.ObjectId(client);
 
-    // Sales role isolation:
-    // Sales users see ONLY their own created quotations.
-    // Admin & Management see ALL quotations created by anyone (Admin, Sales A, Sales B, etc.).
+    if (onlyLatest === 'true' || onlyLatest === true) {
+      filter.$or = [{ isLatest: true }, { isLatest: { $exists: false } }];
+    }
+
+    // Sales role isolation
     if (user && user.role === 'sales') {
       const uId = user._id ? user._id.toString() : user.id;
       filter.createdBy = new Types.ObjectId(uId);
     }
 
     if (search) {
-      filter.$or = [
-        { quotationNo: { $regex: search, $options: 'i' } },
-        { 'services.name': { $regex: search, $options: 'i' } },
+      const searchRegex = { $regex: search, $options: 'i' };
+      const searchConditions = [
+        { quotationNo: searchRegex },
+        { rootQuotationNo: searchRegex },
+        { 'services.name': searchRegex },
       ];
+      if (filter.$or) {
+        filter.$and = [{ $or: filter.$or }, { $or: searchConditions }];
+        delete filter.$or;
+      } else {
+        filter.$or = searchConditions;
+      }
     }
 
     const skip = (Number(page) - 1) * Number(limit);
@@ -174,11 +356,26 @@ export class QuotationsService {
         .populate('lead', 'name company email phone')
         .populate('client', 'name company email phone')
         .populate('createdBy', 'name email role')
+        .populate('parentQuotation', 'quotationNo version totalAmount')
         .skip(skip)
         .limit(Number(limit))
         .sort({ createdAt: -1 }),
       this.quotationModel.countDocuments(filter),
     ]);
+
+    // Automated expiry check
+    const now = new Date();
+    for (const q of quotations) {
+      if (
+        q.validUntil &&
+        new Date(q.validUntil) < now &&
+        ['sent', 'viewed', 'pending_approval', 'negotiation'].includes(q.status)
+      ) {
+        q.status = 'expired';
+        await this.quotationModel.findByIdAndUpdate(q._id, { status: 'expired' });
+      }
+    }
+
     return { quotations, total };
   }
 
@@ -187,6 +384,7 @@ export class QuotationsService {
       .findById(id)
       .populate('lead', 'name company email phone address city')
       .populate('client', 'name company email phone address city gstin')
+      .populate('parentQuotation', 'quotationNo version totalAmount createdAt')
       .populate('createdBy', 'name email phone role');
     if (!q) throw new NotFoundException('Quotation not found');
 
@@ -254,17 +452,20 @@ export class QuotationsService {
     const updated = await this.quotationModel.findByIdAndUpdate(id, updatePayload, { new: true });
     if (!updated) throw new NotFoundException('Quotation not found');
 
-    // Auto-sync into Payments collection if applicable
     await this.syncQuotationPayment(updated);
-
     return updated;
   }
-   
+
   async requestApproval(id: string, user?: any): Promise<QuotationDocument> {
     const q = await this.findOne(id, user);
     q.status = 'pending_approval';
     (q as any).approvalRequestedAt = new Date();
-    return await q.save();
+    const saved = await q.save();
+
+    const userId = user?._id?.toString() || (q.createdBy as any)?.toString();
+    await this.notifyAdminsAboutQuotation(saved, userId, `Quotation Approval Requested: ${saved.quotationNo}`);
+
+    return saved;
   }
 
   async approve(id: string, user?: any): Promise<QuotationDocument> {
@@ -275,7 +476,13 @@ export class QuotationsService {
     q.status = 'approved';
     (q as any).approvedAt = new Date();
     if (user && user._id) (q as any).approvedBy = new Types.ObjectId(user._id);
-    return await q.save();
+    const saved = await q.save();
+
+    // Notify the salesperson that quote was approved
+    await this.notifySalesAboutApproval(saved, true);
+    await this.syncQuotationPayment(saved);
+
+    return saved;
   }
 
   async reject(id: string, reason?: string, user?: any): Promise<QuotationDocument> {
@@ -285,13 +492,16 @@ export class QuotationsService {
     const q = await this.findOne(id);
     q.status = 'rejected_approval';
     (q as any).rejectionReason = reason || 'Not approved by SuperAdmin';
-    return await q.save();
+    const saved = await q.save();
+
+    // Notify the salesperson that quote was rejected with feedback
+    await this.notifySalesAboutApproval(saved, false, reason);
+    return saved;
   }
 
   async sendEmail(id: string, user?: any): Promise<{ success: boolean; message: string }> {
     const quotation = await this.findOne(id, user);
 
-    // Sales Role Approval Check
     if (user && user.role === 'sales') {
       const allowed = ['approved', 'sent', 'viewed', 'accepted'];
       if (!allowed.includes(quotation.status)) {
@@ -315,12 +525,102 @@ export class QuotationsService {
     const sent = await this.mailService.sendQuotationEmail(recipient, recipientName, quotation);
     if (sent) {
       await this.quotationModel.findByIdAndUpdate(id, { status: 'sent', sentAt: new Date() });
-      // Ensure payment is synced
       await this.syncQuotationPayment(quotation);
       return { success: true, message: `Quotation ${quotation.quotationNo} successfully sent to ${recipient}` };
     } else {
       throw new BadRequestException(`Failed to dispatch email to ${recipient}. Please check SMTP/Email configuration.`);
     }
+  }
+
+  // ==========================================
+  // Public Client Portal Endpoints
+  // ==========================================
+  async getPublicQuotation(id: string): Promise<any> {
+    const q = await this.quotationModel
+      .findById(id)
+      .populate('lead', 'name company email phone city')
+      .populate('client', 'name company email phone city gstin address')
+      .populate('createdBy', 'name email phone');
+
+    if (!q) throw new NotFoundException('Proposal document not found or link has expired');
+
+    // Auto mark as viewed when opened
+    if (q.status === 'sent') {
+      q.status = 'viewed';
+      q.viewedAt = new Date();
+      await q.save();
+    }
+
+    return q;
+  }
+
+  async acceptPublicProposal(id: string, clientNotes?: string): Promise<{ success: boolean; message: string }> {
+    const q = await this.quotationModel.findById(id);
+    if (!q) throw new NotFoundException('Quotation not found');
+
+    q.status = 'accepted';
+    (q as any).clientAcceptedAt = new Date();
+    if (clientNotes) (q as any).clientAcceptedNotes = clientNotes;
+    await q.save();
+
+    await this.syncQuotationPayment(q);
+
+    // Notify creator & admins
+    try {
+      const creatorId = q.createdBy ? q.createdBy.toString() : null;
+      if (creatorId) {
+        await this.notificationsService.create({
+          userId: creatorId,
+          title: 'Proposal Accepted by Client!',
+          message: `Client accepted Proposal ${q.quotationNo} (₹${q.totalAmount?.toLocaleString('en-IN')})!`,
+          type: 'quotation',
+          module: 'quotations',
+          referenceId: q._id.toString(),
+        });
+      }
+      const admins = await this.userModel.find({ role: { $in: ['admin', 'superadmin'] } }).select('_id');
+      for (const admin of admins) {
+        await this.notificationsService.create({
+          userId: admin._id.toString(),
+          title: 'Proposal Accepted by Client!',
+          message: `Client accepted Proposal ${q.quotationNo} (₹${q.totalAmount?.toLocaleString('en-IN')})!`,
+          type: 'quotation',
+          module: 'quotations',
+          referenceId: q._id.toString(),
+        });
+      }
+    } catch (err) {
+      console.error('Failed to notify upon client acceptance:', err);
+    }
+
+    return { success: true, message: `Proposal ${q.quotationNo} successfully accepted.` };
+  }
+
+  async requestChangesPublic(id: string, feedback: string): Promise<{ success: boolean; message: string }> {
+    const q = await this.quotationModel.findById(id);
+    if (!q) throw new NotFoundException('Quotation not found');
+
+    q.status = 'negotiation';
+    (q as any).clientFeedback = feedback;
+    await q.save();
+
+    try {
+      const creatorId = q.createdBy ? q.createdBy.toString() : null;
+      if (creatorId) {
+        await this.notificationsService.create({
+          userId: creatorId,
+          title: 'Client Requested Proposal Revision',
+          message: `Client requested changes on ${q.quotationNo}: "${feedback}"`,
+          type: 'quotation',
+          module: 'quotations',
+          referenceId: q._id.toString(),
+        });
+      }
+    } catch (err) {
+      console.error('Failed to notify upon client revision request:', err);
+    }
+
+    return { success: true, message: 'Your revision request has been submitted to the account manager.' };
   }
 
   async remove(id: string, user?: any): Promise<void> {
@@ -339,4 +639,3 @@ export class QuotationsService {
     return { count: res.deletedCount || 0 };
   }
 }
-

@@ -8,6 +8,7 @@ import { LogTimeSessionDto } from './dto/log-time-session.dto';
 import { AddCommentDto } from './dto/add-comment.dto';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
+import { Roles } from '../common/decorators/roles.decorator';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 
 @Controller('tasks')
@@ -16,6 +17,7 @@ export class TasksController {
   constructor(private readonly tasksService: TasksService) {}
 
   @Post()
+  @Roles('admin', 'management')
   async create(@Body() dto: CreateTaskDto, @CurrentUser() user: any) {
     const task = await this.tasksService.create(dto, user);
     return { success: true, message: 'Task created successfully', data: task };
@@ -87,11 +89,28 @@ export class TasksController {
   // Workflow 7: All time entries remain accurate and auditable
   @Get('timer/entries')
   async getTimeEntries(
-    @Query('taskId') taskId: string,
-    @Query('projectId') projectId: string,
+    @Query('taskId') taskId?: string,
+    @Query('projectId') projectId?: string,
+    @Query('userId') userId?: string,
+    @Query('dateFilter') dateFilter?: string,
+    @Query('startDate') startDate?: string,
+    @Query('endDate') endDate?: string,
+    @CurrentUser() user?: any,
   ) {
-    const entries = await this.tasksService.getTimeEntries(taskId, projectId);
+    const entries = await this.tasksService.getTimeEntries(taskId, projectId, userId, dateFilter, startDate, endDate, user);
     return { success: true, message: 'Time entries fetched', data: entries };
+  }
+
+  @Delete('timer/entries/:id')
+  async deleteTimeEntry(@Param('id') id: string, @CurrentUser() user: any) {
+    await this.tasksService.deleteTimeEntry(id, user);
+    return { success: true, message: 'Time entry deleted successfully', data: null };
+  }
+
+  @Post('timer/manual')
+  async addManualTimeEntry(@Body() body: any, @CurrentUser() user: any) {
+    const entry = await this.tasksService.addManualTimeEntry(body, user);
+    return { success: true, message: 'Time logged successfully', data: entry };
   }
 
   // Workflow 14: Trigger check and notification dispatch for overdue and SLA risk tasks
@@ -118,6 +137,7 @@ export class TasksController {
   }
 
   @Put(':id')
+  @Roles('admin', 'management')
   async update(@Param('id') id: string, @Body() dto: any, @CurrentUser() user: any) {
     const task = await this.tasksService.update(id, dto, user);
     return { success: true, message: 'Task updated successfully', data: task };
@@ -248,6 +268,7 @@ export class TasksController {
   }
 
   @Delete(':id')
+  @Roles('admin', 'management')
   async remove(@Param('id') id: string, @CurrentUser() user: any) {
     await this.tasksService.remove(id, user);
     return { success: true, message: 'Task deleted successfully', data: null };

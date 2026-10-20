@@ -27,6 +27,21 @@ export class Quotation {
   @Prop({ unique: true })
   quotationNo: string;
 
+  @Prop({ index: true })
+  rootQuotationNo: string;
+
+  @Prop({ type: Number, default: 1 })
+  version: number;
+
+  @Prop({ type: Types.ObjectId, ref: 'Quotation' })
+  parentQuotation: Types.ObjectId;
+
+  @Prop({ type: Boolean, default: true, index: true })
+  isLatest: boolean;
+
+  @Prop({ type: String })
+  revisionReason: string;
+
   @Prop({ type: Types.ObjectId, ref: 'Lead' })
   lead: Types.ObjectId;
 
@@ -55,7 +70,20 @@ export class Quotation {
   validUntil: Date;
 
   @Prop({
-    enum: ['draft', 'pending_approval', 'approved', 'rejected_approval', 'sent', 'viewed', 'negotiation', 'accepted', 'rejected', 'expired'],
+    enum: [
+      'draft',
+      'pending_approval',
+      'approved',
+      'rejected_approval',
+      'sent',
+      'viewed',
+      'negotiation',
+      'accepted',
+      'rejected',
+      'expired',
+      'superseded',
+      'revised',
+    ],
     default: 'draft',
   })
   status: string;
@@ -71,6 +99,15 @@ export class Quotation {
 
   @Prop({ type: String })
   rejectionReason: string;
+
+  @Prop({ type: Date })
+  clientAcceptedAt: Date;
+
+  @Prop({ type: String })
+  clientAcceptedNotes: string;
+
+  @Prop({ type: String })
+  clientFeedback: string;
 
   @Prop({ type: String, default: 'sales_standard' })
   templateType: string;
@@ -127,21 +164,41 @@ QuotationSchema.pre<QuotationDocument>('save', async function () {
   if (!this.quotationNo) {
     const Model = this.constructor as any;
     const year = new Date().getFullYear();
-    const lastDoc = await Model.findOne({ quotationNo: { $regex: new RegExp(`^QUO-${year}-\\d+$`) } }).sort({ quotationNo: -1, createdAt: -1 });
+    const lastDoc = await Model.findOne({ quotationNo: { $regex: new RegExp(`^QUO-${year}-\\d+`) } }).sort({ quotationNo: -1, createdAt: -1 });
     let nextNum = 1;
     if (lastDoc && lastDoc.quotationNo) {
       const match = lastDoc.quotationNo.match(/QUO-\d+-(\d+)/);
       if (match) nextNum = parseInt(match[1], 10) + 1;
     }
-    while (await Model.findOne({ quotationNo: `QUO-${year}-${String(nextNum).padStart(4, '0')}` })) {
+    while (
+      await Model.findOne({
+        $or: [
+          { quotationNo: `QUO-${year}-${String(nextNum).padStart(4, '0')}` },
+          { quotationNo: `QUO-${year}-${String(nextNum).padStart(4, '0')}-V1` },
+          { rootQuotationNo: `QUO-${year}-${String(nextNum).padStart(4, '0')}` },
+        ],
+      })
+    ) {
       nextNum++;
     }
-    this.quotationNo = `QUO-${year}-${String(nextNum).padStart(4, '0')}`;
+    const root = `QUO-${year}-${String(nextNum).padStart(4, '0')}`;
+    this.rootQuotationNo = root;
+    this.quotationNo = `${root}-V1`;
+    this.version = 1;
+    this.isLatest = true;
   }
+
+  if (!this.rootQuotationNo && this.quotationNo) {
+    const match = this.quotationNo.match(/^(QUO-\d+-\d+)/i);
+    this.rootQuotationNo = match ? match[1].toUpperCase() : this.quotationNo;
+  }
+  if (!this.version) this.version = 1;
+  if (this.isLatest === undefined) this.isLatest = true;
+
   // Calculate totals
   if (this.services?.length) {
-    this.subtotal = this.services.reduce((s, svc) => s + (svc.amount || 0), 0);
-    this.taxAmount = ((this.subtotal - this.discount) * this.taxPercent) / 100;
-    this.totalAmount = this.subtotal - this.discount + this.taxAmount;
+    this.subtotal = this.services.reduce((s, svc) => s + (Number(svc.amount) || ((Number(svc.quantity) || 1) * (Number(svc.rate) || 0))), 0);
+    this.taxAmount = Math.max(0, ((this.subtotal - (this.discount || 0)) * (this.taxPercent || 0)) / 100);
+    this.totalAmount = Math.max(0, this.subtotal - (this.discount || 0) + this.taxAmount);
   }
 });

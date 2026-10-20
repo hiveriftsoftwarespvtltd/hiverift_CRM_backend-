@@ -37,9 +37,19 @@ export class InvoicesController {
   }
 
   @Put(':id')
-  async update(@Param('id') id: string, @Body() dto: Partial<CreateInvoiceDto>) {
-    const data = await this.invoicesService.update(id, dto);
+  async update(@Param('id') id: string, @Body() dto: Partial<CreateInvoiceDto>, @CurrentUser() user: any) {
+    const data = await this.invoicesService.update(id, dto, user?._id?.toString());
     return { message: 'Invoice updated successfully', data };
+  }
+
+  @Post(':id/payments')
+  async recordPayment(
+    @Param('id') id: string,
+    @Body() body: any,
+    @CurrentUser() user: any,
+  ) {
+    const data = await this.invoicesService.recordPayment(id, body, user._id.toString());
+    return { message: 'Payment recorded and deposited to account successfully', data };
   }
 
   @Delete(':id')
