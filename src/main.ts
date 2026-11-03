@@ -16,15 +16,17 @@ async function bootstrap() {
   app.use(json({ limit: '50mb' }));
   app.use(urlencoded({ extended: true, limit: '50mb' }));
 
-  // Trust Apache reverse proxy (1 hop) so X-Forwarded-For / req.ip work correctly
+  // Trust Apache/Nginx reverse proxy
+  app.set('trust proxy', 1);
 
-
+  // Enable CORS for production & dev
   app.enableCors({
     origin: true,
     credentials: true,
   });
 
   app.setGlobalPrefix('api/v1');
+
   // Global Pipes
   app.useGlobalPipes(
     new ValidationPipe({
@@ -42,8 +44,6 @@ async function bootstrap() {
 
   const port = process.env.PORT || 5000;
   await app.listen(port);
-  // console.log(`📡 API Base Endpoint: https://api.hiveriftdesk.online/api/v1 (Meta Incoming Webhook Active)`);
-  console.log(`📡 API Base Endpoint: http://localhost:${port}/api/v1 (Meta Incoming Webhook Active)`);
-  // console.log(`📡 API Base Endpoint: https://hiveriftdesk.online/hiveriftCRM-backend/api/v1 (Meta Incoming Webhook Active)`);
+  console.log(`📡 API Base Endpoint: https://api.hiveriftdesk.online/api/v1 (Meta Incoming Webhook Active)`);
 }
 bootstrap();
