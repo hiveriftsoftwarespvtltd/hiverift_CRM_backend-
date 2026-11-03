@@ -39,6 +39,17 @@ export class TimeEntry {
 
   @Prop({ default: 'live_timer' })
   source: string;
+
+  @Prop({ default: true, index: true })
+  isBillable: boolean;
+
+  @Prop({ default: false, index: true })
+  isLocked: boolean;
 }
 
 export const TimeEntrySchema = SchemaFactory.createForClass(TimeEntry);
+
+// Index to quickly locate active/paused timers and support concurrency enforcement
+TimeEntrySchema.index({ user: 1, endTime: 1, isLive: 1 });
+TimeEntrySchema.index({ user: 1, isLive: 1 });
+

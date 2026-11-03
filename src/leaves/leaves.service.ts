@@ -14,7 +14,10 @@ export class LeavesService {
   async apply(dto: any, userId: string): Promise<LeaveDocument> {
     const from = new Date(dto.fromDate);
     const to = new Date(dto.toDate);
-    const days = Math.max(1, Math.ceil((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+    let days = Math.max(1, Math.ceil((to.getTime() - from.getTime()) / (1000 * 60 * 60 * 24)) + 1);
+    if (dto.isHalfDay) {
+      days = 0.5;
+    }
 
     const applicant = await this.userModel.findById(userId);
     if (!applicant) throw new NotFoundException('Applicant not found');

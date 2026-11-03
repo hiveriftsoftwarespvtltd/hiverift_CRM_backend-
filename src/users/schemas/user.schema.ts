@@ -11,6 +11,7 @@ export enum UserRole {
   DIGITAL_MARKETING = 'digital_marketing',
   DEVELOPMENT = 'development',
   HR = 'hr',
+  CLIENT = 'client',
 }
 
 @Schema({ timestamps: true })
@@ -44,6 +45,9 @@ export class User {
 
   @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'User' })
   reportingTo: Types.ObjectId;
+
+  @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'Client', index: true })
+  clientRef?: Types.ObjectId;
 
   @Prop()
   avatar: string;

@@ -4,7 +4,7 @@ import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { MetaWebhookService } from './meta-webhook.service';
 import { MetaService } from './meta.service';
-import { MetaVerificationDto, TestMetaIngestDto, SendWhatsAppMessageDto } from './dto/meta-webhook.dto';
+import { MetaVerificationDto, TestMetaIngestDto, SendWhatsAppMessageDto, SendWhatsAppTemplateDto } from './dto/meta-webhook.dto';
 import { Lead, LeadDocument } from '../leads/schemas/lead.schema';
 import { Public } from '../common/decorators/public.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
@@ -223,6 +223,101 @@ export class MetaController {
     return {
       success: true,
       message: 'WhatsApp message sent successfully',
+      data: chatMsgObj,
+    };
+  }
+
+  /**
+   * POST /api/v1/meta/whatsapp/send-template
+   * CRM Agent Template Sender Endpoint using Meta WhatsApp Cloud API pre-approved templates
+   */
+  @Post('whatsapp/send-template')
+  @UseGuards(JwtAuthGuard)
+  async sendWhatsAppTemplate(@Req() req: any, @Body() dto: SendWhatsAppTemplateDto) {
+    if (!dto.phone || !dto.templateName) {
+      throw new BadRequestException('Phone number and templateName are required');
+    }
+
+    const user = req.user;
+    const userRole = (user?.role || '').toLowerCase();
+    const isAdminOrManagement =
+      userRole === 'admin' ||
+      userRole === 'management' ||
+      userRole === 'superadmin' ||
+      userRole === 'super_admin';
+
+    const targetLeadId = dto.leadId || dto.conversation_id;
+    let targetLead: LeadDocument | null = null;
+
+    if (targetLeadId) {
+      const searchConds: any[] = [{ leadId: targetLeadId }];
+      if (Types.ObjectId.isValid(targetLeadId)) {
+        searchConds.push({ _id: targetLeadId });
+      }
+      targetLead = await this.leadModel.findOne({ $or: searchConds });
+    }
+
+    if (!targetLead && dto.phone) {
+      const cleanPhone = dto.phone.replace(/\D/g, '').slice(-10);
+      targetLead = await this.leadModel.findOne({
+        $or: [
+          { phone: new RegExp(cleanPhone) },
+          { whatsapp: new RegExp(cleanPhone) },
+        ],
+      });
+    }
+
+    // Security role check: Sales users can only message assigned/created leads
+    if (!isAdminOrManagement && targetLead && user) {
+      const uId = user._id ? user._id.toString() : user.id;
+      const assignedStr = targetLead.assignedTo ? targetLead.assignedTo.toString() : '';
+      const createdStr = targetLead.createdBy ? targetLead.createdBy.toString() : '';
+      const isOwnerOrAssigned = assignedStr === uId || createdStr === uId;
+
+      if (!isOwnerOrAssigned) {
+        throw new UnauthorizedException('You do not have permission to send messages to this lead.');
+      }
+    }
+
+    // Call Meta Service to send the template message
+    const sendResult = await this.metaService.sendWhatsAppTemplateMessage(
+      dto.phone,
+      dto.templateName,
+      dto.parameters || [],
+      dto.templateLanguage || 'en',
+    );
+
+    const messageContent = dto.renderedMessage || `[WhatsApp Template: ${dto.templateName}]`;
+
+    const chatMsgObj = {
+      whatsappMessageId: sendResult.whatsappMessageId,
+      direction: 'outgoing',
+      senderType: 'agent',
+      message: messageContent,
+      templateName: dto.templateName,
+      templateParameters: dto.parameters,
+      phone: dto.phone,
+      status: sendResult.success ? 'sent' : 'failed',
+      createdAt: new Date(),
+    };
+
+    if (targetLead) {
+      if (!targetLead.messages) targetLead.messages = [];
+      targetLead.messages.push(chatMsgObj as any);
+      await targetLead.save();
+    }
+
+    if (!sendResult.success) {
+      return {
+        success: false,
+        message: sendResult.error || 'Failed to send WhatsApp template message',
+        data: chatMsgObj,
+      };
+    }
+
+    return {
+      success: true,
+      message: 'Meta WhatsApp template sent successfully',
       data: chatMsgObj,
     };
   }

@@ -25,6 +25,20 @@ import { SettingsModule } from './settings/settings.module';
 import { TicketsModule } from './tickets/tickets.module';
 import { CapacityModule } from './capacity/capacity.module';
 import { AccountsModule } from './accounts/accounts.module';
+import { DealsModule } from './deals/deals.module';
+import { ServicePackagesModule } from './service-packages/service-packages.module';
+import { ApprovalsModule } from './approvals/approvals.module';
+import { ClientPortalModule } from './client-portal/client-portal.module';
+import { SprintsModule } from './sprints/sprints.module';
+import { RecruitmentModule } from './recruitment/recruitment.module';
+import { EmployeeLifecycleModule } from './employee-lifecycle/employee-lifecycle.module';
+import { DocumentsModule } from './documents/documents.module';
+import { TimesheetsModule } from './timesheets/timesheets.module';
+import { GeneralLedgerModule } from './general-ledger/general-ledger.module';
+import { ProcurementModule } from './procurement/procurement.module';
+import { PayrollModule } from './payroll/payroll.module';
+import { ReconciliationModule } from './reconciliation/reconciliation.module';
+import { ExecutiveModule } from './executive/executive.module';
 
 @Module({
   imports: [
@@ -33,6 +47,11 @@ import { AccountsModule } from './accounts/accounts.module';
       imports: [ConfigModule],
       useFactory: async (configService: ConfigService) => ({
         uri: configService.get<string>('MONGO_URI') || configService.get<string>('MONGO_ATLAS_URI'),
+        maxPoolSize: 15,
+        minPoolSize: 2,
+        serverSelectionTimeoutMS: 15000,
+        socketTimeoutMS: 45000,
+        family: 4,
         connectionFactory: (connection) => {
           connection.on('connected', () => {
             console.log('✅ MongoDB Atlas Connected');
@@ -69,6 +88,20 @@ import { AccountsModule } from './accounts/accounts.module';
     SettingsModule,
     CapacityModule,
     AccountsModule,
+    DealsModule,
+    ServicePackagesModule,
+    ApprovalsModule,
+    ClientPortalModule,
+    SprintsModule,
+    RecruitmentModule,
+    EmployeeLifecycleModule,
+    DocumentsModule,
+    TimesheetsModule,
+    GeneralLedgerModule,
+    ProcurementModule,
+    PayrollModule,
+    ReconciliationModule,
+    ExecutiveModule,
   ],
 })
 export class AppModule {}

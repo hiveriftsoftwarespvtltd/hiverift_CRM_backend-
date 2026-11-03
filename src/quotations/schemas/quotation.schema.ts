@@ -106,6 +106,26 @@ export class Quotation {
   @Prop({ type: String })
   clientAcceptedNotes: string;
 
+  // Client Approval & Authorization Details (M03 - Approved By)
+  @Prop({ type: String })
+  approvedByName?: string;
+
+  @Prop({ type: String })
+  approvedByEmail?: string;
+
+  @Prop({ type: String })
+  approvedByPhone?: string;
+
+  @Prop({ type: String })
+  approvedByIpAddress?: string;
+
+  // Backward-compat aliases
+  @Prop({ type: String })
+  signerName?: string;
+
+  @Prop({ type: String })
+  signerEmail?: string;
+
   @Prop({ type: String })
   clientFeedback: string;
 

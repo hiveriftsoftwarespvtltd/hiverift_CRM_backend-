@@ -74,6 +74,26 @@ export class TasksService {
     }
   }
 
+  // Helper to detect circular dependency in task DAG (GAP-06)
+  private async hasCircularDependency(taskId: string, targetDependsOnId: string): Promise<boolean> {
+    let currentId: string | null = targetDependsOnId;
+    const visited = new Set<string>();
+    visited.add(taskId);
+
+    while (currentId) {
+      if (visited.has(currentId)) {
+        return true;
+      }
+      visited.add(currentId);
+      const parentTask: any = await this.taskModel.findById(currentId).select('dependsOnTask').lean();
+      if (!parentTask || !parentTask.dependsOnTask) {
+        break;
+      }
+      currentId = parentTask.dependsOnTask.toString();
+    }
+    return false;
+  }
+
   // Create Task (Personal, Department, Project, Cross-Dept, Deliverable, Sales)
   async create(dto: CreateTaskDto, user: any): Promise<TaskDocument> {
     const userRole = (user.role || '').toLowerCase();
@@ -119,6 +139,9 @@ export class TasksService {
     if (dto.reviewer && Types.ObjectId.isValid(dto.reviewer)) {
       payload.reviewer = new Types.ObjectId(dto.reviewer);
     }
+    if (dto.reviewDeadline) {
+      payload.reviewDeadline = new Date(dto.reviewDeadline);
+    }
 
     if (dto.client) {
       if (Types.ObjectId.isValid(dto.client)) {
@@ -162,7 +185,9 @@ export class TasksService {
       }
     }
     if (dto.milestone && !payload.milestone) payload.milestone = dto.milestone;
-    if (dto.dependsOnTask && Types.ObjectId.isValid(dto.dependsOnTask)) payload.dependsOnTask = new Types.ObjectId(dto.dependsOnTask);
+    if (dto.dependsOnTask && Types.ObjectId.isValid(dto.dependsOnTask)) {
+      payload.dependsOnTask = new Types.ObjectId(dto.dependsOnTask);
+    }
 
     // Rule 1: PERSONAL Task - Self Assigned, Managed by User, No mandatory external review
     if (dto.taskType === TaskType.PERSONAL) {
@@ -608,7 +633,13 @@ export class TasksService {
     }
 
     if (priority) filter.priority = priority.toUpperCase();
-    if (taskType) filter.taskType = taskType.toUpperCase();
+    if (taskType) {
+      filter.taskType = taskType.toUpperCase();
+      if (filter.taskType === TaskType.PERSONAL && !isSuperAdmin) {
+        filter.$and = filter.$and || [];
+        filter.$and.push({ $or: [{ assignedTo: new Types.ObjectId(uId) }, { createdBy: new Types.ObjectId(uId) }] });
+      }
+    }
     if (crossDeptStatus) filter.crossDeptStatus = crossDeptStatus.toUpperCase();
     if (reassignmentStatus) filter.reassignmentStatus = reassignmentStatus.toUpperCase();
     if (project && Types.ObjectId.isValid(project)) filter.project = new Types.ObjectId(project);
@@ -775,6 +806,30 @@ export class TasksService {
     if (rawNewStatus === 'COMPLETED') newStatus = TaskStatus.DONE;
     if (rawNewStatus === 'ON_HOLD') newStatus = TaskStatus.BLOCKED;
 
+    // Strict Canonical State Machine Transition Validation (GAP-01)
+    const VALID_TRANSITIONS: Record<string, string[]> = {
+      [TaskStatus.TODO]: [TaskStatus.IN_PROGRESS, TaskStatus.BLOCKED, TaskStatus.CANCELLED],
+      [TaskStatus.IN_PROGRESS]: [TaskStatus.SUBMITTED, TaskStatus.BLOCKED, TaskStatus.DONE, TaskStatus.CANCELLED],
+      [TaskStatus.BLOCKED]: [TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.CANCELLED],
+      [TaskStatus.SUBMITTED]: [TaskStatus.DONE, TaskStatus.REWORK, TaskStatus.BLOCKED, TaskStatus.CANCELLED],
+      [TaskStatus.REWORK]: [TaskStatus.IN_PROGRESS, TaskStatus.SUBMITTED, TaskStatus.BLOCKED, TaskStatus.CANCELLED],
+      [TaskStatus.DONE]: [TaskStatus.TODO, TaskStatus.REWORK], // Reopening
+      [TaskStatus.CANCELLED]: [TaskStatus.TODO],
+      // Backward-compat aliases
+      'DRAFT': [TaskStatus.TODO, TaskStatus.IN_PROGRESS, TaskStatus.CANCELLED],
+      'REVIEW': [TaskStatus.DONE, TaskStatus.REWORK, TaskStatus.BLOCKED, TaskStatus.CANCELLED],
+    };
+
+    if (oldStatus !== newStatus) {
+      const allowed = VALID_TRANSITIONS[oldStatus] || [];
+      // Super admin can override transitions with audit trail if needed, otherwise enforce strictly
+      if (!allowed.includes(newStatus) && !isSuperAdmin) {
+        throw new BadRequestException(
+          `Invalid state transition from ${oldStatus} to ${newStatus}. Allowed transitions: ${allowed.join(', ') || 'None'}`
+        );
+      }
+    }
+
     // Rule: BLOCKED requires reason
     if (newStatus === TaskStatus.BLOCKED) {
       const reason = dto.blockedReason || dto.onHoldReason || task.blockedReason || task.onHoldReason;
@@ -798,6 +853,20 @@ export class TasksService {
 
     // Rule: SUBMITTED (Review) validation
     if (newStatus === TaskStatus.SUBMITTED) {
+      if (dto.reviewer && Types.ObjectId.isValid(dto.reviewer)) {
+        task.reviewer = new Types.ObjectId(dto.reviewer);
+      }
+      if (task.reviewRequired !== false) {
+        const hasReviewer = task.reviewer || dto.reviewer || task.assignedManager;
+        if (!hasReviewer) {
+          throw new BadRequestException('A designated reviewer is required before submitting the task for review.');
+        }
+      }
+      if (dto.reviewDeadline) {
+        task.reviewDeadline = new Date(dto.reviewDeadline);
+      } else if (!task.reviewDeadline) {
+        task.reviewDeadline = new Date(Date.now() + 48 * 60 * 60 * 1000);
+      }
       if (task.taskType === TaskType.BUG && !dto.bugFixSummary && !task.bugFixSummary) {
         throw new BadRequestException('A bug fix summary detailing changes made is required before submitting for QA review.');
       }
@@ -832,14 +901,26 @@ export class TasksService {
         }
       }
 
-      task.completedAt = new Date();
+      const completionTime = new Date();
+      task.completedAt = completionTime;
       task.reviewerDecision = 'APPROVED';
-      task.reviewerDecisionAt = new Date();
+      task.reviewerDecisionAt = completionTime;
       if (task.taskType === TaskType.BUG) {
         task.bugQaApproved = true;
       }
       if (dto.completionEvidence) task.completionEvidence = dto.completionEvidence;
       if (dto.deliveryEvidence) task.deliveryEvidence = dto.deliveryEvidence;
+
+      // Preserve historical completion snapshot (GAP-03)
+      task.completionSnapshot = {
+        completedAt: completionTime,
+        completedBy: new Types.ObjectId(uId),
+        actualHours: task.actualHours || 0,
+        completionEvidence: task.completionEvidence,
+        deliveryEvidence: task.deliveryEvidence,
+        reviewerDecision: 'APPROVED',
+        reviewerDecisionAt: completionTime,
+      };
     }
 
     // Rule: REOPENING from DONE
@@ -1133,7 +1214,16 @@ export class TasksService {
       payload.clientName = dto.clientName ? String(dto.clientName).trim() : '';
     }
     if (dto.assignedTo && Types.ObjectId.isValid(dto.assignedTo)) payload.assignedTo = new Types.ObjectId(dto.assignedTo);
-    if (dto.dependsOnTask && Types.ObjectId.isValid(dto.dependsOnTask)) payload.dependsOnTask = new Types.ObjectId(dto.dependsOnTask);
+    if (dto.dependsOnTask && Types.ObjectId.isValid(dto.dependsOnTask)) {
+      if (dto.dependsOnTask.toString() === id.toString()) {
+        throw new BadRequestException('A task cannot depend on itself');
+      }
+      const isCircular = await this.hasCircularDependency(id, dto.dependsOnTask.toString());
+      if (isCircular) {
+        throw new BadRequestException('Circular dependency detected. A task cannot depend on a prerequisite that depends on it.');
+      }
+      payload.dependsOnTask = new Types.ObjectId(dto.dependsOnTask);
+    }
 
     const updated = await this.taskModel.findByIdAndUpdate(id, payload, { new: true });
     if (!updated) throw new NotFoundException('Task not found');
@@ -1176,6 +1266,16 @@ export class TasksService {
       if (project.status === ProjectStatus.ON_HOLD || project.status === ProjectStatus.CANCELLED) {
         throw new BadRequestException('Project timer can only run when project status is active/started');
       }
+    }
+
+    // Atomic check: Ensure no concurrent active timer exists right before creation
+    const doubleCheck = await this.timeEntryModel.findOne({
+      user: new Types.ObjectId(userId),
+      isLive: true,
+      endTime: null,
+    });
+    if (doubleCheck) {
+      throw new BadRequestException('A timer is already active for another session. Only one active timer is permitted at a time.');
     }
 
     const entry = await this.timeEntryModel.create({
@@ -1254,6 +1354,26 @@ export class TasksService {
         await task.save();
         await this.logAudit(task._id, 'STATUS_CHANGE', user, 'TODO', 'IN_PROGRESS', 'Work timer started on task');
       }
+    }
+
+    // Atomic race-condition pre-check
+    const raceCheck = await this.timeEntryModel.findOne({
+      user: new Types.ObjectId(userId),
+      isLive: true,
+      endTime: null,
+    });
+    if (raceCheck) {
+      throw new BadRequestException('A timer is already active for another session. Only one active timer is permitted at a time.');
+    }
+
+    // Atomic check: Ensure no concurrent active timer exists right before creation
+    const doubleCheck = await this.timeEntryModel.findOne({
+      user: new Types.ObjectId(userId),
+      isLive: true,
+      endTime: null,
+    });
+    if (doubleCheck) {
+      throw new BadRequestException('A timer is already active for another session. Only one active timer is permitted at a time.');
     }
 
     const entry = await this.timeEntryModel.create({
@@ -1530,6 +1650,16 @@ export class TasksService {
     }
 
     const entryDate = date ? new Date(date) : new Date();
+    // Atomic check: Ensure no concurrent active timer exists right before creation
+    const doubleCheck = await this.timeEntryModel.findOne({
+      user: new Types.ObjectId(userId),
+      isLive: true,
+      endTime: null,
+    });
+    if (doubleCheck) {
+      throw new BadRequestException('A timer is already active for another session. Only one active timer is permitted at a time.');
+    }
+
     const entry = await this.timeEntryModel.create({
       user: new Types.ObjectId(userId),
       task: task._id,

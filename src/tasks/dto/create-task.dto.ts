@@ -121,6 +121,9 @@ export class CreateTaskDto {
   reviewer?: string;
 
   @IsOptional()
+  reviewDeadline?: Date | string;
+
+  @IsOptional()
   @IsBoolean()
   reviewRequired?: boolean;
 

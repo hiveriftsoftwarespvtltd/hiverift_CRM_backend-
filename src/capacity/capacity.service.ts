@@ -223,14 +223,21 @@ export class CapacityService {
       const stdDailyHours = emp.dailyWorkingHours || 8;
       const empLeaves = leavesByEmp.get(empId) || [];
 
-      // Calculate approved leave hours in this period
+      // Calculate approved leave hours in this period (handling full-day & half-day leaves GAP-08)
+      let leaveHours = 0;
       let leaveDaysCount = 0;
       for (const lv of empLeaves) {
         const lvStart = new Date(Math.max(new Date(lv.fromDate).getTime(), range.startDate.getTime()));
         const lvEnd = new Date(Math.min(new Date(lv.toDate).getTime(), range.endDate.getTime()));
-        leaveDaysCount += this.countBusinessDays(lvStart, lvEnd);
+        const bDays = this.countBusinessDays(lvStart, lvEnd);
+        if (lv.isHalfDay) {
+          leaveDaysCount += bDays * 0.5;
+          leaveHours += bDays * (stdDailyHours * 0.5);
+        } else {
+          leaveDaysCount += bDays;
+          leaveHours += bDays * stdDailyHours;
+        }
       }
-      const leaveHours = leaveDaysCount * stdDailyHours;
 
       // Net working hours = (business days * daily hours) - approved leave hours
       const rawWorkingHours = range.businessDays * stdDailyHours;
@@ -709,7 +716,8 @@ export class CapacityService {
       for (const lv of leaves) {
         const lS = new Date(Math.max(new Date(lv.fromDate).getTime(), start.getTime()));
         const lE = new Date(Math.min(new Date(lv.toDate).getTime(), delivery.getTime()));
-        leaveDays += this.countBusinessDays(lS, lE);
+        const bDays = this.countBusinessDays(lS, lE);
+        leaveDays += (lv as any).isHalfDay ? bDays * 0.5 : bDays;
       }
       const leaveH = leaveDays * stdDailyH;
       const netWorkingH = Math.max(0, rawWindowHours - leaveH);
@@ -876,7 +884,8 @@ export class CapacityService {
     for (const lv of leaves) {
       const lS = new Date(Math.max(new Date(lv.fromDate).getTime(), now.getTime()));
       const lE = new Date(Math.min(new Date(lv.toDate).getTime(), dueDate.getTime()));
-      leaveDays += this.countBusinessDays(lS, lE);
+      const bDays = this.countBusinessDays(lS, lE);
+      leaveDays += (lv as any).isHalfDay ? bDays * 0.5 : bDays;
     }
     const netWorkingHours = Math.max(0, rawHours - (leaveDays * stdDailyH));
 

@@ -79,6 +79,9 @@ export class Task {
   @Prop({ type: Types.ObjectId, ref: 'Project' })
   project: Types.ObjectId;
 
+  @Prop({ type: Types.ObjectId, ref: 'Sprint', index: true })
+  sprint: Types.ObjectId;
+
   @Prop({ type: Types.ObjectId, ref: 'Ticket' })
   linkedTicket: Types.ObjectId;
 
@@ -103,7 +106,17 @@ export class Task {
   @Prop({ enum: Object.values(TaskPriority), default: TaskPriority.MEDIUM })
   priority: string;
 
-  @Prop({ enum: Object.values(TaskStatus), default: TaskStatus.TODO })
+  @Prop({
+    type: String,
+    enum: [
+      ...Object.values(TaskStatus),
+      ...Object.values(TaskStatus).map((v) => v.toLowerCase()),
+      'in-progress',
+      'on-hold',
+    ],
+    default: TaskStatus.TODO,
+    set: (v: string) => (v ? v.toUpperCase().replace('-', '_') : v),
+  })
   status: string;
 
   @Prop({ type: Date })
@@ -167,6 +180,12 @@ export class Task {
   @Prop({ type: Date })
   reviewerDecisionAt: Date;
 
+  @Prop({ type: Date })
+  reviewDeadline: Date;
+
+  @Prop({ type: Date })
+  reviewOverdueAt: Date;
+
   @Prop({ trim: true })
   reopenReason: string;
 
@@ -175,6 +194,18 @@ export class Task {
 
   @Prop({ type: Date })
   reopenedAt: Date;
+
+  // Historical as-of reporting snapshot (GAP-03)
+  @Prop({ type: Object })
+  completionSnapshot?: {
+    completedAt: Date;
+    completedBy?: Types.ObjectId;
+    actualHours?: number;
+    completionEvidence?: string;
+    deliveryEvidence?: string;
+    reviewerDecision?: string;
+    reviewerDecisionAt?: Date;
+  };
 
   @Prop({ trim: true })
   completionEvidence: string;
@@ -203,6 +234,15 @@ export class Task {
 
   @Prop({ default: false })
   clientApproved: boolean;
+
+  @Prop({ type: Date })
+  clientSignoffDate?: Date;
+
+  @Prop({ trim: true })
+  clientSignoffNotes?: string;
+
+  @Prop({ trim: true })
+  clientSignoffBy?: string;
 
   // Bug Tracking & Defect Management Fields
   @Prop({ trim: true })

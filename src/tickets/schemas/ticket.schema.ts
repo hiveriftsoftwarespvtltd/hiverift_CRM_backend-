@@ -25,6 +25,7 @@ export enum TicketCategory {
   ACCOUNT = 'ACCOUNT',
   BUG = 'BUG',
   FEATURE_REQUEST = 'FEATURE_REQUEST',
+  SUPPORT = 'SUPPORT',
   OTHER = 'OTHER',
 }
 

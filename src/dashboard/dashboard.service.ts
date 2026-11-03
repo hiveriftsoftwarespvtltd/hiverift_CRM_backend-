@@ -85,18 +85,7 @@ export class DashboardService {
       });
     }
 
-    // If all sales are 0 (e.g. fresh DB), provide realistic baseline so chart looks informative
-    const hasSales = result.some((r) => r.sales > 0);
-    if (!hasSales) {
-      const totalPayments = await this.paymentModel.aggregate([
-        { $group: { _id: null, total: { $sum: '$receivedAmount' } } },
-      ]);
-      const base = totalPayments[0]?.total ? Math.round(totalPayments[0].total / numDays) : 0;
-      if (base > 0) {
-        return result.map((r, idx) => ({ ...r, sales: Math.round(base * (0.8 + (idx % 3) * 0.2)) }));
-      }
-    }
-
+    // Return exact actual data from payments ledger without fabricating numbers (GAP-07)
     return result;
   }
 

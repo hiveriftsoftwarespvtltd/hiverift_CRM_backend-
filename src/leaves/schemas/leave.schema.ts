@@ -20,6 +20,9 @@ export class Leave {
   @Prop({ type: Number, default: 1 })
   days: number;
 
+  @Prop({ type: Boolean, default: false })
+  isHalfDay: boolean;
+
   @Prop({ required: true })
   reason: string;
 

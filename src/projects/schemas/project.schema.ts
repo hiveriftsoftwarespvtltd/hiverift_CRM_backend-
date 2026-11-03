@@ -105,6 +105,9 @@ export class Project {
 
   @Prop({ type: Types.ObjectId, ref: 'Lead' })
   leadRef: Types.ObjectId;
+
+  @Prop({ type: Types.ObjectId, ref: 'Quotation', index: true })
+  quotationRef?: Types.ObjectId;
 }
 
 export const ProjectSchema = SchemaFactory.createForClass(Project);

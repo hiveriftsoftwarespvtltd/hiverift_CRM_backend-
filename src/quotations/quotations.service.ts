@@ -5,6 +5,8 @@ import { Quotation, QuotationDocument } from './schemas/quotation.schema';
 import { Payment, PaymentDocument } from '../payments/schemas/payment.schema';
 import { Lead, LeadDocument } from '../leads/schemas/lead.schema';
 import { User, UserDocument } from '../users/schemas/user.schema';
+import { Project, ProjectDocument, ProjectStatus, ProjectDepartment } from '../projects/schemas/project.schema';
+import { Client, ClientDocument } from '../clients/schemas/client.schema';
 import { MailService } from '../common/services/mail.service';
 import { NotificationsService } from '../notifications/notifications.service';
 
@@ -15,6 +17,8 @@ export class QuotationsService implements OnModuleInit {
     @InjectModel(Payment.name) private paymentModel: Model<PaymentDocument>,
     @InjectModel(Lead.name) private leadModel: Model<LeadDocument>,
     @InjectModel(User.name) private userModel: Model<UserDocument>,
+    @InjectModel(Project.name) private projectModel: Model<ProjectDocument>,
+    @InjectModel(Client.name) private clientModel: Model<ClientDocument>,
     private mailService: MailService,
     private notificationsService: NotificationsService,
   ) {}
@@ -118,6 +122,68 @@ export class QuotationsService implements OnModuleInit {
       });
     } catch (err) {
       console.error('Failed to notify sales user about quotation approval:', err);
+    }
+  }
+
+
+  /**
+   * Idempotently provision a Project from an Accepted Quotation (M03 / COM-04)
+   */
+  private async autoProvisionProjectFromQuotation(quotation: QuotationDocument) {
+    try {
+      if (!quotation || quotation.status !== 'accepted') return;
+
+      // Check if project already provisioned for this quotation
+      const existing = await this.projectModel.findOne({ quotationRef: quotation._id });
+      if (existing) {
+        return existing;
+      }
+
+      // Determine client ObjectId
+      let clientId = quotation.client;
+      if (!clientId && quotation.lead) {
+        // Find if lead already has a client ref
+        const lead = await this.leadModel.findById(quotation.lead).select('clientRef').lean();
+        if (lead && (lead as any).clientRef) {
+          clientId = (lead as any).clientRef;
+        }
+      }
+
+      if (!clientId) {
+        console.log(`[autoProvisionProject] Skipping project provisioning for ${quotation.quotationNo}: No linked client found yet.`);
+        return;
+      }
+
+      const prjName = quotation.headerTitle || `Project - ${quotation.quotationNo}`;
+      const deadline = quotation.validUntil ? new Date(quotation.validUntil) : new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+
+      const newProject = new this.projectModel({
+        name: prjName,
+        client: clientId,
+        department: ProjectDepartment.DEVELOPMENT,
+        service: quotation.services && quotation.services[0] ? quotation.services[0].name : 'Custom Service',
+        status: ProjectStatus.ASSIGNED,
+        progress: 0,
+        startDate: new Date(),
+        deadline,
+        value: quotation.totalAmount || 0,
+        requirements: quotation.executiveSummary || quotation.notes || 'Scope provisioned from accepted quotation ' + quotation.quotationNo,
+        leadRef: quotation.lead,
+        quotationRef: quotation._id,
+        assignedBy: quotation.approvedBy || quotation.createdBy,
+        notes: [
+          {
+            text: `Project automatically provisioned from accepted Quotation ${quotation.quotationNo} (Approved by ${quotation.approvedByName || quotation.signerName || 'Client'})`,
+            createdAt: new Date(),
+          },
+        ],
+      });
+
+      const savedPrj = await newProject.save();
+      console.log(`[autoProvisionProject] Successfully provisioned Project ${savedPrj.projectId} from Quotation ${quotation.quotationNo}`);
+      return savedPrj;
+    } catch (err) {
+      console.error('[autoProvisionProject] Error provisioning project from quotation:', err);
     }
   }
 
@@ -554,16 +620,42 @@ export class QuotationsService implements OnModuleInit {
     return q;
   }
 
-  async acceptPublicProposal(id: string, clientNotes?: string): Promise<{ success: boolean; message: string }> {
+  async acceptPublicProposal(
+    id: string,
+    body?: {
+      notes?: string;
+      approvedByName?: string;
+      approvedByEmail?: string;
+      approvedByPhone?: string;
+      signerName?: string;
+      signerEmail?: string;
+      ipAddress?: string;
+    }
+  ): Promise<{ success: boolean; message: string }> {
     const q = await this.quotationModel.findById(id);
     if (!q) throw new NotFoundException('Quotation not found');
 
+    const approverName = body?.approvedByName || body?.signerName || '';
+    const approverEmail = body?.approvedByEmail || body?.signerEmail || '';
+    const approverPhone = body?.approvedByPhone || '';
+
     q.status = 'accepted';
     (q as any).clientAcceptedAt = new Date();
-    if (clientNotes) (q as any).clientAcceptedNotes = clientNotes;
+    if (body?.notes) (q as any).clientAcceptedNotes = body.notes;
+    if (approverName) {
+      (q as any).approvedByName = approverName;
+      (q as any).signerName = approverName;
+    }
+    if (approverEmail) {
+      (q as any).approvedByEmail = approverEmail;
+      (q as any).signerEmail = approverEmail;
+    }
+    if (approverPhone) (q as any).approvedByPhone = approverPhone;
+    if (body?.ipAddress) (q as any).approvedByIpAddress = body.ipAddress;
     await q.save();
 
     await this.syncQuotationPayment(q);
+    await this.autoProvisionProjectFromQuotation(q);
 
     // Notify creator & admins
     try {

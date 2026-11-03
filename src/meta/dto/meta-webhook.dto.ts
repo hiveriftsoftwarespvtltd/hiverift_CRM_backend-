@@ -62,4 +62,38 @@ export class SendWhatsAppMessageDto {
   @IsOptional()
   @IsString()
   conversation_id?: string;
+
+  @IsOptional()
+  @IsString()
+  templateName?: string;
+
+  @IsOptional()
+  parameters?: string[];
+}
+
+export class SendWhatsAppTemplateDto {
+  @IsString()
+  phone: string;
+
+  @IsString()
+  templateName: string;
+
+  @IsOptional()
+  @IsString()
+  templateLanguage?: string;
+
+  @IsOptional()
+  parameters?: string[];
+
+  @IsOptional()
+  @IsString()
+  leadId?: string;
+
+  @IsOptional()
+  @IsString()
+  conversation_id?: string;
+
+  @IsOptional()
+  @IsString()
+  renderedMessage?: string;
 }

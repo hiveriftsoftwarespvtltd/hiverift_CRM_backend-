@@ -34,8 +34,19 @@ export class QuotationsController {
 
   @Public()
   @Post('public/:id/accept')
-  async acceptPublicProposal(@Param('id') id: string, @Body() body: { notes?: string }) {
-    const result = await this.quotationsService.acceptPublicProposal(id, body.notes);
+  async acceptPublicProposal(
+    @Param('id') id: string,
+    @Body() body: {
+      notes?: string;
+      approvedByName?: string;
+      approvedByEmail?: string;
+      approvedByPhone?: string;
+      signerName?: string;
+      signerEmail?: string;
+      ipAddress?: string;
+    }
+  ) {
+    const result = await this.quotationsService.acceptPublicProposal(id, body);
     return { success: true, message: result.message, data: result };
   }
 

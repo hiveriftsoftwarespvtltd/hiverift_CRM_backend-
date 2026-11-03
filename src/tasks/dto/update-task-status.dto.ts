@@ -52,5 +52,12 @@ export class UpdateTaskStatusDto {
   @IsOptional()
   @IsString()
   reviewerDecision?: string;
+
+  @IsOptional()
+  reviewDeadline?: Date | string;
+
+  @IsOptional()
+  @IsString()
+  reviewer?: string;
 }
 
