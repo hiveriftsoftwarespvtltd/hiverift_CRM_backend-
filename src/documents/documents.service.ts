@@ -21,7 +21,7 @@ export class DocumentsService {
   constructor(
     @InjectModel(DocumentRecord.name)
     private docModel: Model<DocumentRecordDocument>,
-  ) {}
+  ) { }
 
   async create(userId: string, dto: CreateDocumentDto): Promise<DocumentRecordDocument> {
     const payload: Partial<DocumentRecord> = {

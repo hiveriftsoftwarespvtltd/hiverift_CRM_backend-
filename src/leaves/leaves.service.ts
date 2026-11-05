@@ -9,7 +9,7 @@ export class LeavesService {
   constructor(
     @InjectModel(Leave.name) private leaveModel: Model<LeaveDocument>,
     @InjectModel(User.name) private userModel: Model<UserDocument>,
-  ) {}
+  ) { }
 
   async apply(dto: any, userId: string): Promise<LeaveDocument> {
     const from = new Date(dto.fromDate);
@@ -126,7 +126,6 @@ export class LeavesService {
     if (!updated) throw new NotFoundException('Leave not found');
     return updated;
   }
-
   async reject(id: string, approverId: string, reason: string): Promise<LeaveDocument> {
     const leave = await this.leaveModel.findById(id).populate('employee', 'name email role');
     if (!leave) throw new NotFoundException('Leave not found');
@@ -145,7 +144,7 @@ export class LeavesService {
       if (approver.role !== UserRole.ADMIN) {
         throw new ForbiddenException('Only Super Admin has authority to reject Leave requests for HR and Management.');
       }
-    } 
+    }
 
     leave.status = 'rejected';
     leave.approvedBy = new Types.ObjectId(approverId);

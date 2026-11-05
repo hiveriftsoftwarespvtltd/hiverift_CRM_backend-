@@ -569,42 +569,50 @@ export class TasksService {
     const isSuperAdmin = [UserRole.ADMIN, UserRole.MANAGEMENT].includes(user.role) || ['admin', 'management', 'super_admin', 'superadmin'].includes(userRole);
     const isDeptHead = Boolean(user.isDepartmentHead) || ['manager', 'head', 'lead'].includes(userRole);
 
-    // Apply Scope Filter if specified
-    if (scope === 'assigned') {
-      filter.assignedTo = new Types.ObjectId(uId);
-      filter.taskType = { $ne: TaskType.PERSONAL };
-    } else if (scope === 'created') {
-      filter.createdBy = new Types.ObjectId(uId);
-      filter.taskType = { $ne: TaskType.PERSONAL };
-    } else if (scope === 'personal') {
-      filter.taskType = TaskType.PERSONAL;
-      filter.createdBy = new Types.ObjectId(uId);
-    } else if (scope === 'my_work' || scope === 'all_my') {
-      filter.$or = [
-        { assignedTo: new Types.ObjectId(uId) },
-        { createdBy: new Types.ObjectId(uId) },
-      ];
-    } else {
-      // Exclude personal tasks from departmental & shared company views
-      if (!taskType) {
+    // Strict Employee Task Isolation & Role-based Visibility
+    if (!isSuperAdmin && !isDeptHead) {
+      // Non-admin employee: Strictly only allowed to see tasks assigned to them (or personal notes they created)
+      if (scope === 'personal') {
+        filter.taskType = TaskType.PERSONAL;
+        filter.createdBy = new Types.ObjectId(uId);
+      } else if (scope === 'created') {
+        filter.createdBy = new Types.ObjectId(uId);
+        filter.taskType = { $ne: TaskType.PERSONAL };
+      } else {
+        filter.assignedTo = new Types.ObjectId(uId);
         filter.taskType = { $ne: TaskType.PERSONAL };
       }
-      // Default Role-based Team Member visibility
-      if (!isSuperAdmin && !isDeptHead) {
+    } else {
+      // Apply Scope Filter if specified for Admin / Dept Head
+      if (scope === 'assigned') {
+        filter.assignedTo = new Types.ObjectId(uId);
+        filter.taskType = { $ne: TaskType.PERSONAL };
+      } else if (scope === 'created') {
+        filter.createdBy = new Types.ObjectId(uId);
+        filter.taskType = { $ne: TaskType.PERSONAL };
+      } else if (scope === 'personal') {
+        filter.taskType = TaskType.PERSONAL;
+        filter.createdBy = new Types.ObjectId(uId);
+      } else if (scope === 'my_work' || scope === 'all_my') {
         filter.$or = [
           { assignedTo: new Types.ObjectId(uId) },
           { createdBy: new Types.ObjectId(uId) },
-          { targetDepartment: userDeptRegex, crossDeptStatus: CrossDeptStatus.PENDING },
         ];
-      } else if (isDeptHead && !isSuperAdmin) {
-        // HOD visibility: own department or target cross-dept requests
-        filter.$or = [
-          { department: userDeptRegex },
-          { requestingDepartment: userDeptRegex },
-          { targetDepartment: userDeptRegex },
-          { assignedTo: new Types.ObjectId(uId) },
-          { createdBy: new Types.ObjectId(uId) },
-        ];
+      } else {
+        // Exclude personal tasks from departmental & shared company views
+        if (!taskType) {
+          filter.taskType = { $ne: TaskType.PERSONAL };
+        }
+        if (isDeptHead && !isSuperAdmin) {
+          // HOD visibility: own department or target cross-dept requests
+          filter.$or = [
+            { department: userDeptRegex },
+            { requestingDepartment: userDeptRegex },
+            { targetDepartment: userDeptRegex },
+            { assignedTo: new Types.ObjectId(uId) },
+            { createdBy: new Types.ObjectId(uId) },
+          ];
+        }
       }
     }
 
@@ -643,7 +651,13 @@ export class TasksService {
     if (crossDeptStatus) filter.crossDeptStatus = crossDeptStatus.toUpperCase();
     if (reassignmentStatus) filter.reassignmentStatus = reassignmentStatus.toUpperCase();
     if (project && Types.ObjectId.isValid(project)) filter.project = new Types.ObjectId(project);
-    if (assignedTo && Types.ObjectId.isValid(assignedTo)) filter.assignedTo = new Types.ObjectId(assignedTo);
+    if (assignedTo && Types.ObjectId.isValid(assignedTo)) {
+      if (isSuperAdmin || isDeptHead) {
+        filter.assignedTo = new Types.ObjectId(assignedTo);
+      } else {
+        filter.assignedTo = new Types.ObjectId(uId);
+      }
+    }
 
     // Date Range / Month / Year Filtering
     if (dateFilter || startDate || endDate) {
@@ -762,8 +776,8 @@ export class TasksService {
     return { tasks: formattedTasks, total };
   }
 
-  // Get Single Task Detail
-  async findOne(id: string): Promise<TaskDocument> {
+  // Get Single Task Detail with Role-Based Isolation
+  async findOne(id: string, user?: any): Promise<TaskDocument> {
     const task = await this.taskModel.findById(id)
       .populate({
         path: 'project',
@@ -780,7 +794,52 @@ export class TasksService {
       .populate('comments.user', 'name avatar role department email');
 
     if (!task) throw new NotFoundException('Task not found');
+
+    if (user) {
+      const uId = (user._id ? user._id.toString() : user.id).toString();
+      const userRole = (user.role || '').toLowerCase();
+      const isSuperAdmin = [UserRole.ADMIN, UserRole.MANAGEMENT].includes(user.role) || ['admin', 'management', 'super_admin', 'superadmin'].includes(userRole);
+      const isDeptHead = Boolean(user.isDepartmentHead) || ['manager', 'head', 'lead'].includes(userRole);
+
+      if (!isSuperAdmin && !isDeptHead) {
+        const assignedId = (task.assignedTo as any)?._id ? (task.assignedTo as any)._id.toString() : (task.assignedTo as any)?.toString();
+        const createdById = (task.createdBy as any)?._id ? (task.createdBy as any)._id.toString() : (task.createdBy as any)?.toString();
+        const reviewerId = (task.reviewer as any)?._id ? (task.reviewer as any)._id.toString() : (task.reviewer as any)?.toString();
+
+        if (assignedId !== uId && createdById !== uId && reviewerId !== uId) {
+          throw new ForbiddenException('You are not authorized to view this task. You can only view tasks assigned to you.');
+        }
+      }
+    }
+
     return task;
+  }
+
+  // Get dynamic task badge counts for the logged-in employee / admin
+  async getMyTaskBadge(user: any) {
+    if (!user) return { activeCount: 0, todoCount: 0, hasNewTasks: false };
+    const uId = (user._id ? user._id.toString() : user.id).toString();
+    const userRole = (user.role || '').toLowerCase();
+    const isSuperAdmin = [UserRole.ADMIN, UserRole.MANAGEMENT].includes(user.role) || ['admin', 'management', 'super_admin', 'superadmin'].includes(userRole);
+
+    const filter: any = {
+      status: { $nin: [TaskStatus.DONE, TaskStatus.COMPLETED, TaskStatus.CANCELLED] },
+    };
+
+    if (!isSuperAdmin) {
+      filter.assignedTo = new Types.ObjectId(uId);
+    }
+
+    const [activeCount, todoCount] = await Promise.all([
+      this.taskModel.countDocuments(filter),
+      this.taskModel.countDocuments({ ...filter, status: { $in: [TaskStatus.TODO, 'PENDING', 'OPEN'] } }),
+    ]);
+
+    return {
+      activeCount,
+      todoCount,
+      hasNewTasks: todoCount > 0,
+    };
   }
 
   // Update Task Status with State Machine & Validation

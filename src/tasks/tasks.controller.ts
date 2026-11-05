@@ -130,9 +130,15 @@ export class TasksController {
     return { success: true, message: 'Task reopened successfully', data: task };
   }
 
+  @Get('my-summary/badge')
+  async getMyTaskBadge(@CurrentUser() user: any) {
+    const data = await this.tasksService.getMyTaskBadge(user);
+    return { success: true, message: 'My task badge data', data };
+  }
+
   @Get(':id')
-  async findOne(@Param('id') id: string) {
-    const task = await this.tasksService.findOne(id);
+  async findOne(@Param('id') id: string, @CurrentUser() user: any) {
+    const task = await this.tasksService.findOne(id, user);
     return { success: true, message: 'Task details fetched', data: task };
   }
 

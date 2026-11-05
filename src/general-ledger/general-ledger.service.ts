@@ -39,7 +39,7 @@ export class GeneralLedgerService implements OnModuleInit {
     private journalModel: Model<JournalEntryDocument>,
     @InjectModel(AccountingPeriod.name)
     private periodModel: Model<AccountingPeriodDocument>,
-  ) {}
+  ) { }
 
   async onModuleInit() {
     try {
@@ -369,7 +369,6 @@ export class GeneralLedgerService implements OnModuleInit {
         endDate: end,
       });
     }
-
     period.isLocked = true;
     period.lockedAt = new Date();
     period.lockedBy = new Types.ObjectId(userId);

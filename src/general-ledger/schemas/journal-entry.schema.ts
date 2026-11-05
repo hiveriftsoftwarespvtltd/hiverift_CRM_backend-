@@ -18,7 +18,7 @@ export class JournalEntry {
   entryDate: Date;
 
   @Prop({ trim: true })
-  reference: string; // e.g. "INV-0042", "SALARY-OCT2026", "EXPENSE-99"
+  reference: string;
 
   @Prop({ required: true, trim: true })
   description: string;

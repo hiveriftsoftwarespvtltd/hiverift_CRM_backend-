@@ -6,7 +6,7 @@ export type AccountingPeriodDocument = AccountingPeriod & Document;
 @Schema({ timestamps: true })
 export class AccountingPeriod {
   @Prop({ required: true, unique: true, trim: true, index: true })
-  periodKey: string; // "YYYY-MM", e.g. "2026-10"
+  periodKey: string;
 
   @Prop({ required: true, type: Date })
   startDate: Date;

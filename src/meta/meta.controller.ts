@@ -10,6 +10,7 @@ import { Public } from '../common/decorators/public.decorator';
 import { JwtAuthGuard } from '../common/guards/jwt-auth.guard';
 import { RolesGuard } from '../common/guards/roles.guard';
 import { Roles } from '../common/decorators/roles.decorator';
+import { throwIfEmpty } from 'rxjs';
 
 function isImageLink(str?: string): boolean {
   if (!str) return false;
@@ -27,7 +28,7 @@ export class MetaController {
     private readonly metaWebhookService: MetaWebhookService,
     private readonly metaService: MetaService,
     @InjectModel(Lead.name) private readonly leadModel: Model<LeadDocument>,
-  ) {}
+  ) { }
 
   /**
    * GET /api/v1/meta/webhook
@@ -226,6 +227,8 @@ export class MetaController {
       data: chatMsgObj,
     };
   }
+
+
 
   /**
    * POST /api/v1/meta/whatsapp/send-template
