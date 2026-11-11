@@ -25,7 +25,8 @@ export class MetaService {
       return null;
     }
 
-    const url = `${META_CONSTANTS.GRAPH_API_BASE_URL}/${apiVersion}/${leadgenId}?access_token=${encodeURIComponent(pageAccessToken)}`;
+    const fields = 'id,created_time,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id,form_name,platform,field_data';
+    const url = `${META_CONSTANTS.GRAPH_API_BASE_URL}/${apiVersion}/${leadgenId}?fields=${fields}&access_token=${encodeURIComponent(pageAccessToken)}`;
 
     const maxRetries = 2;
     let attempt = 0;

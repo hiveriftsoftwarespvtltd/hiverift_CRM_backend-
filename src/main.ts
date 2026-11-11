@@ -13,8 +13,19 @@ async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, { rawBody: true });
 
   // Increase payload limit for sending images / attachments as base64 or large bodies
-  app.use(json({ limit: '50mb' }));
-  app.use(urlencoded({ extended: true, limit: '50mb' }));
+  app.use(json({
+    limit: '50mb',
+    verify: (req: any, _res: any, buf: Buffer) => {
+      req.rawBody = buf;
+    },
+  }));
+  app.use(urlencoded({
+    extended: true,
+    limit: '50mb',
+    verify: (req: any, _res: any, buf: Buffer) => {
+      req.rawBody = buf;
+    },
+  }));
 
   // Trust Apache/Nginx reverse proxy
   app.set('trust proxy', 1);

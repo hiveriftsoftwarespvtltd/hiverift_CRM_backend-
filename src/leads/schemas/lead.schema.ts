@@ -20,6 +20,7 @@ export enum LeadStatus {
 export enum LeadSource {
   META = 'META',
   FACEBOOK = 'facebook',
+  FACEBOOK_ADS = 'Facebook Ads',
   GOOGLE = 'google',
   WEBSITE = 'website',
   REFERRAL = 'referral',
@@ -191,7 +192,7 @@ export class Lead {
   lostReason: string;
 
   // Meta Lead Ads Integration & Attribution Fields
-  @Prop({ type: String, sparse: true, index: true })
+  @Prop({ type: String, sparse: true, unique: true, index: true })
   metaLeadId?: string;
 
   @Prop({ type: String })

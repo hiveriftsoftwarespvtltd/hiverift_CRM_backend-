@@ -37,11 +37,11 @@ export class MetaWebhookService {
    * Meta Webhook Verification for GET /api/v1/meta/webhook
    */
   verifyWebhook(mode?: string, verifyToken?: string, challenge?: string): string {
-    const configuredToken = this.configService.get<string>('META_WEBHOOK_VERIFY_TOKEN');
+    const configuredToken = this.configService.get<string>('META_VERIFY_TOKEN') || this.configService.get<string>('META_WEBHOOK_VERIFY_TOKEN');
 
     if (!mode || !verifyToken) {
       this.logger.warn('Webhook verification failed: Missing mode or verify_token query parameters');
-      throw new BadRequestException('Missing hub.mode or hub.verify_token parameters');
+      throw new ForbiddenException('Missing hub.mode or hub.verify_token parameters');
     }
 
     if (mode === 'subscribe' && configuredToken && verifyToken === configuredToken) {
@@ -49,7 +49,7 @@ export class MetaWebhookService {
       return challenge || '';
     }
 
-    this.logger.warn('Webhook verification failed: Invalid verify token');
+    this.logger.warn(`Webhook verification failed: Invalid verify token or mode (received mode=${mode})`);
     throw new ForbiddenException('Invalid verification token');
   }
 
@@ -59,27 +59,27 @@ export class MetaWebhookService {
   verifySignature(rawBody: Buffer | string | undefined, signatureHeader?: string): boolean {
     const appSecret = this.configService.get<string>('META_APP_SECRET');
 
-    // If app secret is not configured or left as default placeholder, allow with warning
+    // If app secret is not configured or left as default placeholder, allow with warning (e.g. dev mode)
     if (!appSecret || appSecret.includes('your_meta_app_secret')) {
       this.logger.warn('META_APP_SECRET is not configured. Skipping HMAC signature validation.');
       return true;
     }
 
     if (!signatureHeader) {
-      this.logger.warn('Signature warning: Missing X-Hub-Signature-256 header. Proceeding with payload processing.');
-      return true;
+      this.logger.warn('Signature verification failed: Missing X-Hub-Signature-256 header.');
+      return false;
     }
 
     if (!rawBody) {
-      this.logger.warn('Signature warning: Raw request body not available. Proceeding with payload processing.');
-      return true;
+      this.logger.warn('Signature verification failed: Raw request body not available.');
+      return false;
     }
 
     try {
       const parts = signatureHeader.split('=');
       if (parts.length !== 2 || parts[0] !== 'sha256') {
-        this.logger.warn('Signature warning: Invalid header format. Proceeding with payload processing.');
-        return true;
+        this.logger.warn('Signature verification failed: Invalid header format, expected sha256=<hash>.');
+        return false;
       }
 
       const signatureHash = parts[1];
@@ -87,21 +87,26 @@ export class MetaWebhookService {
       const payloadBuffer = Buffer.isBuffer(rawBody) ? rawBody : Buffer.from(rawBody);
       const computedHash = hmac.update(payloadBuffer).digest('hex');
 
+      if (signatureHash.length !== computedHash.length) {
+        this.logger.warn('Signature verification failed: Hash length mismatch.');
+        return false;
+      }
+
       const isMatch = crypto.timingSafeEqual(
         Buffer.from(signatureHash, 'hex'),
         Buffer.from(computedHash, 'hex'),
       );
 
       if (!isMatch) {
-        this.logger.warn('Signature warning: HMAC mismatch. Proceeding with payload processing to prevent lead drop.');
-      } else {
-        this.logger.log('✅ Meta Webhook HMAC Signature Verified');
+        this.logger.warn('Signature verification failed: HMAC SHA-256 mismatch.');
+        return false;
       }
 
+      this.logger.log('✅ Meta Webhook HMAC Signature Verified successfully');
       return true;
     } catch (err: any) {
-      this.logger.warn(`Signature verification warning: ${err.message}. Proceeding with payload processing.`);
-      return true;
+      this.logger.error(`Signature verification error: ${err.message}`);
+      return false;
     }
   }
 
@@ -110,6 +115,19 @@ export class MetaWebhookService {
    * Processes incoming Meta Webhook Payload (Supports both Instant Form Ads & Click-to-WhatsApp Ads)
    */
   async handleWebhookPayload(payload: MetaWebhookPayload): Promise<{ success: boolean; processedCount: number }> {
+    // 0. Support Direct Test Sample Payload (from Meta Developer Test Modal)
+    if (payload && ((payload as any).sample?.field === 'leadgen' || (payload as any).field === 'leadgen')) {
+      const val = (payload as any).sample?.value || (payload as any).value || {};
+      const leadgenId = val.leadgen_id || val.lead_id;
+      if (leadgenId) {
+        this.logger.log(`Processing Meta Test Lead Sample: leadgen_id=${leadgenId}`);
+        await this.processLeadgenId(leadgenId, val).catch(err => {
+          this.logger.warn(`Test lead sample warning: ${err.message}`);
+        });
+        return { success: true, processedCount: 1 };
+      }
+    }
+
     if (!payload || !Array.isArray(payload.entry)) {
       this.logger.log(`Received empty or unhandled Meta event object: ${payload?.object || 'unknown'}`);
       return { success: true, processedCount: 0 };
@@ -386,14 +404,14 @@ export class MetaWebhookService {
 
     const newLead = new this.leadModel({
       leadId,
-      name: mapped.name || 'Meta Lead',
+      name: mapped.name || 'Facebook Lead',
       phone: finalPhone,
       whatsapp: finalPhone,
       email: cleanEmail,
       company: mapped.company || '',
       city: mapped.city || '',
-      requirement: mapped.requirement || `Submitted Meta Lead Form (${mapped.formName || mapped.formId || 'Instant Form'})`,
-      source: LeadSource.META,
+      requirement: mapped.requirement || `Submitted Facebook Lead Form (${mapped.formName || mapped.formId || 'Instant Form'})`,
+      source: LeadSource.FACEBOOK_ADS,
       status: LeadStatus.NEW,
       metaLeadId: leadgenId,
       platform: mapped.platform || 'META_LEAD_AD',
@@ -410,8 +428,18 @@ export class MetaWebhookService {
       createdBy: undefined,
     });
 
-    const savedLead = await newLead.save();
-    this.logger.log(`Created new CRM Lead from Meta Lead Ad: ${savedLead.leadId} (${savedLead.name})`);
+    let savedLead: LeadDocument;
+    try {
+      savedLead = await newLead.save();
+      this.logger.log(`Created new CRM Lead from Facebook Lead Ad: ${savedLead.leadId} (${savedLead.name})`);
+    } catch (saveErr: any) {
+      if (saveErr.code === 11000 && (saveErr.keyPattern?.metaLeadId || saveErr.message?.includes('metaLeadId'))) {
+        this.logger.warn(`Duplicate key detected on metaLeadId=${leadgenId}. Safely returning existing lead.`);
+        const dup = await this.leadModel.findOne({ metaLeadId: leadgenId });
+        if (dup) return dup;
+      }
+      throw saveErr;
+    }
 
     // 6. Notify Admins
     try {
@@ -419,13 +447,13 @@ export class MetaWebhookService {
       for (const admin of admins) {
         await this.notificationsService.create({
           userId: admin._id.toString(),
-          title: `📣 New Meta Lead: ${savedLead.name}`,
-          message: `A new lead came from Meta Ad (${savedLead.campaignName || 'Meta Campaign'}) - Phone: ${finalPhone}`,
+          title: `📣 New Facebook Lead: ${savedLead.name}`,
+          message: `A new lead came from Facebook Lead Ads (${savedLead.campaignName || 'Campaign'}) - Phone: ${finalPhone}`,
           type: 'lead_assigned',
         });
       }
     } catch (err: any) {
-      this.logger.error(`Failed to send Meta lead notification: ${err.message}`);
+      this.logger.error(`Failed to send Facebook lead notification: ${err.message}`);
     }
 
     return savedLead;
