@@ -6,6 +6,7 @@ import { MetaWebhookService } from './meta-webhook.service';
 import { Lead, LeadSchema } from '../leads/schemas/lead.schema';
 import { User, UserSchema } from '../users/schemas/user.schema';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { LeadsModule } from '../leads/leads.module';
 
 @Module({
   imports: [
@@ -14,6 +15,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
       { name: User.name, schema: UserSchema },
     ]),
     NotificationsModule,
+    LeadsModule,
   ],
   controllers: [MetaController],
   providers: [MetaService, MetaWebhookService],

@@ -1,4 +1,4 @@
-import { Injectable, Logger, ForbiddenException, BadRequestException } from '@nestjs/common';
+import { Injectable, Logger, ForbiddenException, BadRequestException, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -6,6 +6,7 @@ import * as crypto from 'crypto';
 import { Lead, LeadDocument, LeadStatus, LeadSource } from '../leads/schemas/lead.schema';
 import { User, UserDocument } from '../users/schemas/user.schema';
 import { NotificationsService } from '../notifications/notifications.service';
+import { LeadRoundRobinService, RoundRobinAssignee } from '../leads/lead-round-robin.service';
 import { MetaService } from './meta.service';
 import { MetaWebhookPayload, MappedMetaLeadData, MetaLeadGraphResponse } from './interfaces/meta.interface';
 
@@ -31,7 +32,49 @@ export class MetaWebhookService {
     @InjectModel(Lead.name) private readonly leadModel: Model<LeadDocument>,
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
     private readonly notificationsService: NotificationsService,
+    @Optional() private readonly leadRoundRobinService?: LeadRoundRobinService,
   ) {}
+
+  private async resolveAutoAssignee(): Promise<RoundRobinAssignee | null> {
+    if (!this.leadRoundRobinService) return null;
+    return this.leadRoundRobinService.getNextAssignee();
+  }
+
+  private async notifyLeadCreation(
+    savedLead: LeadDocument,
+    assignee: RoundRobinAssignee | null,
+    title: string,
+    adminMessage: string,
+    assigneeMessage: string,
+  ): Promise<void> {
+    try {
+      if (assignee) {
+        await this.notificationsService.create({
+          userId: assignee._id.toString(),
+          title,
+          message: assigneeMessage,
+          type: 'lead_assigned',
+        });
+      }
+
+      const admins = await this.userModel
+        .find({ role: { $in: ['admin', 'management', 'superadmin', 'super_admin'] } }, { _id: 1 })
+        .lean();
+      const assigneeIdStr = assignee ? assignee._id.toString() : '';
+
+      for (const admin of admins) {
+        if (admin._id.toString() === assigneeIdStr) continue;
+        await this.notificationsService.create({
+          userId: admin._id.toString(),
+          title,
+          message: adminMessage,
+          type: 'lead_assigned',
+        });
+      }
+    } catch (err: any) {
+      this.logger.error(`Failed to send lead notification: ${err.message}`);
+    }
+  }
 
   /**
    * Meta Webhook Verification for GET /api/v1/meta/webhook
@@ -309,6 +352,8 @@ export class MetaWebhookService {
     }
 
     const leadId = await this.generateLeadId();
+    const assignee = await this.resolveAutoAssignee();
+
     const newLead = new this.leadModel({
       leadId,
       name: customerName,
@@ -316,29 +361,34 @@ export class MetaWebhookService {
       whatsapp: finalPhone,
       requirement: requirementText,
       source: LeadSource.WHATSAPP,
-      status: LeadStatus.NEW,
+      status: assignee ? LeadStatus.ASSIGNED : LeadStatus.NEW,
+      assignedTo: assignee ? assignee._id : undefined,
       platform: 'WHATSAPP_AD',
       adId: referral.source_id || '',
       messages: [chatMsgObj],
+      notes: assignee
+        ? [
+            {
+              _id: new Types.ObjectId(),
+              text: `Auto-assigned to ${assignee.name} via Round Robin`,
+              createdAt: new Date(),
+            },
+          ]
+        : [],
     });
 
     const saved = await newLead.save();
-    this.logger.log(`Created new CRM Lead from WhatsApp Ad Message: ${saved.leadId} (${saved.name} - ${finalPhone})`);
+    this.logger.log(
+      `Created new CRM Lead from WhatsApp Ad Message: ${saved.leadId} (${saved.name} - ${finalPhone})${assignee ? ` -> Assigned to ${assignee.name}` : ''}`,
+    );
 
-    // Notify Admins
-    try {
-      const admins = await this.userModel.find({ role: { $in: ['admin', 'management', 'superadmin', 'super_admin'] } }, { _id: 1 }).lean();
-      for (const admin of admins) {
-        await this.notificationsService.create({
-          userId: admin._id.toString(),
-          title: `💬 New WhatsApp Lead: ${saved.name}`,
-          message: `A new lead messaged via WhatsApp Ad (${finalPhone}): "${msgText}"`,
-          type: 'lead_assigned',
-        });
-      }
-    } catch (err: any) {
-      this.logger.error(`Failed to send WhatsApp lead notification: ${err.message}`);
-    }
+    await this.notifyLeadCreation(
+      saved,
+      assignee,
+      `💬 New WhatsApp Lead: ${saved.name}`,
+      `A new lead messaged via WhatsApp Ad (${finalPhone}): "${msgText}"${assignee ? ` — Auto-assigned to ${assignee.name}` : ''}`,
+      `A new WhatsApp lead (${finalPhone}) was auto-assigned to you: "${msgText}"`,
+    );
 
     return saved;
   }
@@ -401,6 +451,7 @@ export class MetaWebhookService {
 
     // 5. CREATE NEW CRM LEAD (Case C)
     const leadId = await this.generateLeadId();
+    const assignee = await this.resolveAutoAssignee();
 
     const newLead = new this.leadModel({
       leadId,
@@ -412,7 +463,7 @@ export class MetaWebhookService {
       city: mapped.city || '',
       requirement: mapped.requirement || `Submitted Facebook Lead Form (${mapped.formName || mapped.formId || 'Instant Form'})`,
       source: LeadSource.FACEBOOK_ADS,
-      status: LeadStatus.NEW,
+      status: assignee ? LeadStatus.ASSIGNED : LeadStatus.NEW,
       metaLeadId: leadgenId,
       platform: mapped.platform || 'META_LEAD_AD',
       campaignId: mapped.campaignId,
@@ -424,14 +475,25 @@ export class MetaWebhookService {
       formId: mapped.formId,
       formName: mapped.formName,
       metaRawData: mapped.metaRawData,
-      assignedTo: undefined,
+      assignedTo: assignee ? assignee._id : undefined,
       createdBy: undefined,
+      notes: assignee
+        ? [
+            {
+              _id: new Types.ObjectId(),
+              text: `Auto-assigned to ${assignee.name} via Round Robin`,
+              createdAt: new Date(),
+            },
+          ]
+        : [],
     });
 
     let savedLead: LeadDocument;
     try {
       savedLead = await newLead.save();
-      this.logger.log(`Created new CRM Lead from Facebook Lead Ad: ${savedLead.leadId} (${savedLead.name})`);
+      this.logger.log(
+        `Created new CRM Lead from Facebook Lead Ad: ${savedLead.leadId} (${savedLead.name})${assignee ? ` -> Assigned to ${assignee.name}` : ''}`,
+      );
     } catch (saveErr: any) {
       if (saveErr.code === 11000 && (saveErr.keyPattern?.metaLeadId || saveErr.message?.includes('metaLeadId'))) {
         this.logger.warn(`Duplicate key detected on metaLeadId=${leadgenId}. Safely returning existing lead.`);
@@ -441,20 +503,14 @@ export class MetaWebhookService {
       throw saveErr;
     }
 
-    // 6. Notify Admins
-    try {
-      const admins = await this.userModel.find({ role: { $in: ['admin', 'management', 'superadmin', 'super_admin'] } }, { _id: 1 }).lean();
-      for (const admin of admins) {
-        await this.notificationsService.create({
-          userId: admin._id.toString(),
-          title: `📣 New Facebook Lead: ${savedLead.name}`,
-          message: `A new lead came from Facebook Lead Ads (${savedLead.campaignName || 'Campaign'}) - Phone: ${finalPhone}`,
-          type: 'lead_assigned',
-        });
-      }
-    } catch (err: any) {
-      this.logger.error(`Failed to send Facebook lead notification: ${err.message}`);
-    }
+    // 6. Notify Assigned Rep & Admins
+    await this.notifyLeadCreation(
+      savedLead,
+      assignee,
+      `📣 New Facebook Lead: ${savedLead.name}`,
+      `A new lead came from Facebook Lead Ads (${savedLead.campaignName || 'Campaign'}) - Phone: ${finalPhone}${assignee ? ` — Auto-assigned to ${assignee.name}` : ''}`,
+      `A new Facebook Lead Ad (${savedLead.campaignName || 'Campaign'}) - Phone: ${finalPhone} was auto-assigned to you.`,
+    );
 
     return savedLead;
   }

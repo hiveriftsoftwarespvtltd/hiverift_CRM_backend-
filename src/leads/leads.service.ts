@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException, ForbiddenException, BadRequestException, ConflictException } from '@nestjs/common';
+import { Injectable, NotFoundException, ForbiddenException, BadRequestException, ConflictException, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Lead, LeadDocument, LeadStatus, LeadSource } from './schemas/lead.schema';
@@ -9,6 +9,7 @@ import { User, UserDocument } from '../users/schemas/user.schema';
 import { CreateLeadDto } from './dto/create-lead.dto';
 import { UpdateLeadDto } from './dto/update-lead.dto';
 import { CreateFollowupDto } from './dto/create-followup.dto';
+import { LeadRoundRobinService } from './lead-round-robin.service';
 
 function sanitizePhone(phoneStr?: string): string {
   if (!phoneStr) return '';
@@ -33,6 +34,7 @@ export class LeadsService {
     @InjectModel(Payment.name) private paymentModel: Model<PaymentDocument>,
     @InjectModel(User.name) private userModel: Model<UserDocument>,
     private readonly notificationsService: NotificationsService,
+    @Optional() private readonly leadRoundRobinService?: LeadRoundRobinService,
   ) { }
 
   private async generateLeadId(): Promise<string> {
@@ -185,6 +187,7 @@ export class LeadsService {
 
     // Auto-generate leadId
     const leadId = await this.generateLeadId();
+    const assignee = this.leadRoundRobinService ? await this.leadRoundRobinService.getNextAssignee() : null;
 
     const newLead = new this.leadModel({
       leadId,
@@ -197,21 +200,39 @@ export class LeadsService {
       city,
       source,
       meetingMode: body.meetingMode || body.meeting_mode || '',
-      status: LeadStatus.NEW,
-      assignedTo: undefined,
+      status: assignee ? LeadStatus.ASSIGNED : LeadStatus.NEW,
+      assignedTo: assignee ? assignee._id : undefined,
       createdBy: undefined,
+      notes: assignee
+        ? [
+            {
+              _id: new Types.ObjectId(),
+              text: `Auto-assigned to ${assignee.name} via Round Robin`,
+              createdAt: new Date(),
+            },
+          ]
+        : [],
     });
 
     const savedLead = await newLead.save();
 
-    // Trigger realtime notification to admin / management team
+    // Trigger realtime notification to assigned rep & admin / management team
     try {
+      if (assignee) {
+        await this.notificationsService.create({
+          userId: assignee._id.toString(),
+          title: `🌐 New Website Lead Assigned: ${name}`,
+          message: `A new incoming lead (${finalPhone}) was auto-assigned to you.`,
+          type: 'lead_assigned',
+        });
+      }
+
       const admins = await this.userModel.find({ role: { $in: ['admin', 'management'] } }, { _id: 1 }).lean();
       for (const admin of admins) {
         await this.notificationsService.create({
           userId: admin._id.toString(),
           title: `🌐 New Website Lead: ${name}`,
-          message: `A new lead has been submitted via Landing Page form (${finalPhone}).`,
+          message: `A new lead has been submitted via Landing Page form (${finalPhone})${assignee ? ` and auto-assigned to ${assignee.name}` : ''}.`,
           type: 'lead_assigned',
         });
       }
@@ -480,10 +501,17 @@ export class LeadsService {
     }
 
     // If sales role, do not allow changing assignedTo
-    if (user?.role === 'sales') {
+    const isSales = (user?.role || '').toLowerCase().trim() === 'sales';
+    if (isSales) {
       delete payload.assignedTo;
-    } else if (updateLeadDto.assignedTo) {
+    } else if (updateLeadDto.assignedTo && Types.ObjectId.isValid(updateLeadDto.assignedTo)) {
       payload.assignedTo = new Types.ObjectId(updateLeadDto.assignedTo);
+      if (existing.status === LeadStatus.NEW && !payload.status) {
+        payload.status = LeadStatus.ASSIGNED;
+      }
+    } else if (updateLeadDto.assignedTo === '' || updateLeadDto.assignedTo === null) {
+      delete payload.assignedTo;
+      payload.$unset = { ...(payload.$unset || {}), assignedTo: '' };
     }
 
     const lead = await this.leadModel.findByIdAndUpdate(id, payload, { new: true });
@@ -538,7 +566,23 @@ export class LeadsService {
     const lead = await this.leadModel.findById(id);
     if (!lead) throw new NotFoundException('Lead not found');
 
+    if (!assignedTo) {
+      lead.assignedTo = undefined as any;
+      lead.notes.push({
+        _id: new Types.ObjectId(),
+        text: 'Lead unassigned by admin',
+        createdBy: userId ? new Types.ObjectId(userId) : (undefined as any),
+        createdAt: new Date(),
+      } as any);
+      await lead.save();
+      return this.findOne(id);
+    }
+
     const assignee = await this.userModel.findById(assignedTo).select('name email');
+    if (!assignee) {
+      throw new NotFoundException('Target assignee user not found');
+    }
+
     lead.assignedTo = new Types.ObjectId(assignedTo);
     if (lead.status === LeadStatus.NEW) {
       lead.status = LeadStatus.ASSIGNED;
@@ -546,12 +590,24 @@ export class LeadsService {
 
     lead.notes.push({
       _id: new Types.ObjectId(),
-      text: `Lead assigned to ${assignee?.name || 'Sales Representative'}`,
+      text: `Lead assigned to ${assignee.name || 'Sales Representative'}`,
       createdBy: userId ? new Types.ObjectId(userId) : (undefined as any),
       createdAt: new Date(),
     } as any);
 
     await lead.save();
+
+    try {
+      await this.notificationsService.create({
+        userId: assignedTo,
+        title: `📌 Lead Assigned: ${lead.name}`,
+        message: `Admin assigned lead ${lead.leadId} (${lead.phone}) to you.`,
+        type: 'lead_assigned',
+      });
+    } catch {
+      // Ignore notification error
+    }
+
     return this.findOne(id);
   }
 

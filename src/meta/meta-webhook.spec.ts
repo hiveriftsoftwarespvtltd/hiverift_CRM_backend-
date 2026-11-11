@@ -8,6 +8,7 @@ import { MetaService } from './meta.service';
 import { Lead, LeadSource, LeadStatus } from '../leads/schemas/lead.schema';
 import { User } from '../users/schemas/user.schema';
 import { NotificationsService } from '../notifications/notifications.service';
+import { LeadRoundRobinService } from '../leads/lead-round-robin.service';
 
 describe('Meta Webhook Integration Tests', () => {
   let webhookService: MetaWebhookService;
@@ -216,6 +217,53 @@ describe('Meta Webhook Integration Tests', () => {
       expect(result?.metaLeadId).toBe(leadgenId);
       expect(result?.source).toBe(LeadSource.FACEBOOK_ADS);
       expect(result?.status).toBe(LeadStatus.NEW);
+    });
+  });
+
+  describe('6. Round Robin Auto-Assignment on Facebook Ads & WhatsApp Leads', () => {
+    it('should alternate Facebook Ads and WhatsApp leads across sales employees via LeadRoundRobinService', async () => {
+      const empA = { _id: 'sales_emp_a' as any, name: 'Sales A' };
+      const empB = { _id: 'sales_emp_b' as any, name: 'Sales B' };
+      const mockRoundRobinService = {
+        getNextAssignee: jest
+          .fn()
+          .mockResolvedValueOnce(empA)
+          .mockResolvedValueOnce(empB),
+      };
+
+      const moduleWithRR: TestingModule = await Test.createTestingModule({
+        providers: [
+          MetaWebhookService,
+          { provide: ConfigService, useValue: mockConfigService },
+          { provide: MetaService, useValue: mockMetaService },
+          { provide: getModelToken(Lead.name), useValue: mockLeadModel },
+          { provide: getModelToken(User.name), useValue: mockUserModel },
+          { provide: NotificationsService, useValue: mockNotificationsService },
+          { provide: LeadRoundRobinService, useValue: mockRoundRobinService },
+        ],
+      }).compile();
+
+      const svcWithRR = moduleWithRR.get<MetaWebhookService>(MetaWebhookService);
+      mockLeadModel.findOne.mockResolvedValue(null);
+      mockMetaService.getLeadDetails.mockResolvedValueOnce({
+        id: 'fb_rr_1',
+        field_data: [
+          { name: 'full_name', values: ['FB Lead 1'] },
+          { name: 'phone_number', values: ['+919999900001'] },
+        ],
+      });
+
+      const fbLead = await svcWithRR.processLeadgenId('fb_rr_1');
+      expect(fbLead?.assignedTo).toBe(empA._id);
+      expect(fbLead?.status).toBe(LeadStatus.ASSIGNED);
+
+      const waLead = await svcWithRR.processWhatsAppMessage(
+        { wa_id: '919999900002', profile: { name: 'WA Lead 2' } },
+        { id: 'wamid.2', from: '919999900002', type: 'text', text: { body: 'Hi' } },
+      );
+      expect(waLead?.assignedTo).toBe(empB._id);
+      expect(waLead?.status).toBe(LeadStatus.ASSIGNED);
+      expect(mockRoundRobinService.getNextAssignee).toHaveBeenCalledTimes(2);
     });
   });
 });
