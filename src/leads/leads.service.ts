@@ -368,8 +368,8 @@ export class LeadsService {
 
     if (source && source !== 'all') {
       const srcStr = String(source).trim();
-      if (srcStr.toUpperCase() === 'META' || srcStr.toLowerCase() === 'facebook') {
-        filter.source = { $in: ['META', 'facebook', 'META_LEAD_AD', /^meta$/i, /^facebook$/i] };
+      if (srcStr.toUpperCase() === 'META' || srcStr.toLowerCase().includes('facebook') || srcStr.toLowerCase().includes('meta')) {
+        filter.source = { $in: ['META', 'facebook', 'Facebook Ads', 'META_LEAD_AD', /^meta/i, /^facebook/i, /^fb$/i] };
       } else {
         filter.source = { $regex: new RegExp(`^${srcStr}$`, 'i') };
       }

@@ -462,7 +462,7 @@ export class MetaWebhookService {
       company: mapped.company || '',
       city: mapped.city || '',
       requirement: mapped.requirement || `Submitted Facebook Lead Form (${mapped.formName || mapped.formId || 'Instant Form'})`,
-      source: LeadSource.FACEBOOK_ADS,
+      source: LeadSource.META,
       status: assignee ? LeadStatus.ASSIGNED : LeadStatus.NEW,
       metaLeadId: leadgenId,
       platform: mapped.platform || 'META_LEAD_AD',

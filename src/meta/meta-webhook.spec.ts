@@ -168,7 +168,7 @@ describe('Meta Webhook Integration Tests', () => {
       expect(savedResult?.email).toBe('aarav.patel@example.com');
       expect(savedResult?.company).toBe('Patel Tech Solutions');
       expect(savedResult?.city).toBe('Mumbai');
-      expect(savedResult?.source).toBe(LeadSource.FACEBOOK_ADS);
+      expect(savedResult?.source).toBe(LeadSource.META);
       expect(savedResult?.status).toBe(LeadStatus.NEW);
       expect(savedResult?.metaLeadId).toBe(leadgenId);
       expect(savedResult?.requirement).toContain('service_required: Custom ERP Software');
@@ -215,7 +215,7 @@ describe('Meta Webhook Integration Tests', () => {
 
       expect(result).toBeDefined();
       expect(result?.metaLeadId).toBe(leadgenId);
-      expect(result?.source).toBe(LeadSource.FACEBOOK_ADS);
+      expect(result?.source).toBe(LeadSource.META);
       expect(result?.status).toBe(LeadStatus.NEW);
     });
   });

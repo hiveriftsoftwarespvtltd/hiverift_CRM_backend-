@@ -1,8 +1,8 @@
 import {
   BadRequestException,
-  ConflictException,
-  Injectable,
-  NotFoundException,
+    ConflictException,
+    Injectable,
+    NotFoundException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -41,7 +41,7 @@ export class ExecutiveService {
     private glService: GeneralLedgerService,
     private reconService: ReconciliationService,
     private approvalsService: ApprovalsService,
-  ) {}
+  ) { }
 
   async calculateLiveMetrics(periodKey?: string) {
     const now = new Date();
@@ -122,10 +122,10 @@ export class ExecutiveService {
     const avgUtilization =
       timesheets.length > 0
         ? Math.round(
-            (timesheets.reduce((sum, t) => sum + (t.billableUtilizationPercentage || 0), 0) /
-              timesheets.length) *
-              10,
-          ) / 10
+          (timesheets.reduce((sum, t) => sum + (t.billableUtilizationPercentage || 0), 0) /
+            timesheets.length) *
+          10,
+        ) / 10
         : 0;
 
     return {
