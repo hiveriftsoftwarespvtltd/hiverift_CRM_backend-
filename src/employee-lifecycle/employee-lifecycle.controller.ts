@@ -27,7 +27,7 @@ import {
 export class EmployeeLifecycleController {
   constructor(
     private readonly lifecycleService: EmployeeLifecycleService,
-  ) {}
+  ) { }
 
   // ================= Checklists =================
 
@@ -44,6 +44,7 @@ export class EmployeeLifecycleController {
   @Put('checklists/:id/toggle')
   async toggleChecklistItem(
     @Request() req: any,
+
     @Param('id') id: string,
     @Body() dto: ToggleChecklistItemDto,
   ) {
