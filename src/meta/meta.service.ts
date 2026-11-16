@@ -215,7 +215,35 @@ export class MetaService {
       const responseData = await response.json().catch(() => ({}));
 
       if (!response.ok) {
-        const errorMsg = responseData?.error?.message || `HTTP ${response.status} ${response.statusText}`;
+        let errorMsg = responseData?.error?.message || `HTTP ${response.status} ${response.statusText}`;
+        const errorCode = responseData?.error?.code;
+
+        // If language mismatch error (e.g. template exists in en_US or en), retry with alternate language code
+        if (errorCode === 132001 || errorMsg.includes('does not exist in') || errorMsg.includes('translation')) {
+          const alternateLang = (languageCode === 'en' || languageCode === 'en_GB') ? 'en_US' : 'en';
+          this.logger.warn(`Retrying WhatsApp Template [${templateName}] with alternate language '${alternateLang}'...`);
+          payload.template.language.code = alternateLang;
+          try {
+            const retryRes = await fetch(url, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${pageAccessToken}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(payload),
+            });
+            const retryData = await retryRes.json().catch(() => ({}));
+            if (retryRes.ok) {
+              const retryWamid = retryData?.messages?.[0]?.id || `wamid.template.${Date.now()}`;
+              this.logger.log(`WhatsApp template [${templateName}] delivered to ${cleanPhone} on fallback '${alternateLang}'. Message ID: ${retryWamid}`);
+              return { success: true, whatsappMessageId: retryWamid };
+            }
+            errorMsg = retryData?.error?.message || errorMsg;
+          } catch (retryErr: any) {
+            this.logger.warn(`Fallback retry failed: ${retryErr?.message || retryErr}`);
+          }
+        }
+
         this.logger.error(`WhatsApp Template API Error for ${cleanPhone} [${templateName}]: ${errorMsg}`);
         return { success: false, error: errorMsg };
       }
