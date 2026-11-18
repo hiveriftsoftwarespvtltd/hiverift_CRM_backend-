@@ -66,6 +66,37 @@ export class AttendanceController {
     return { message: 'Monthly attendance report', data: report };
   }
 
+  @Get('holidays')
+  async getHolidays(
+    @Query('year') year?: number,
+    @Query('month') month?: number,
+    @CurrentUser() user?: any,
+  ) {
+    const holidays = await this.attendanceService.getHolidays(
+      year ? Number(year) : undefined,
+      month ? Number(month) : undefined,
+      user?._id?.toString(),
+    );
+    return { message: 'Holidays fetched', data: holidays };
+  }
+
+  @Post('holidays')
+  @Roles('admin', 'management', 'hr', 'super_admin', 'superadmin')
+  async createHoliday(
+    @Body() body: { title: string; startDate: string; endDate?: string; scope?: string; employeeId?: string; notes?: string },
+    @CurrentUser() user: any,
+  ) {
+    const result = await this.attendanceService.createHoliday(body, user);
+    return { message: 'Holiday created successfully', data: result };
+  }
+
+  @Delete('holidays/:id')
+  @Roles('admin', 'management', 'hr', 'super_admin', 'superadmin')
+  async deleteHoliday(@Param('id') id: string) {
+    await this.attendanceService.deleteHoliday(id);
+    return { message: 'Holiday deleted successfully' };
+  }
+
   @Put(':id/overtime')
   async updateOvertime(
     @Param('id') id: string,

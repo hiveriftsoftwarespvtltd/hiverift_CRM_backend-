@@ -2,6 +2,7 @@ import { Injectable, NotFoundException, ConflictException, BadRequestException, 
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import { Attendance, AttendanceDocument } from './schemas/attendance.schema';
+import { Holiday, HolidayDocument } from './schemas/holiday.schema';
 import { User, UserDocument } from '../users/schemas/user.schema';
 import { NotificationsService } from '../notifications/notifications.service';
 
@@ -119,6 +120,7 @@ function createISTDate(baseDateInput: Date | string, hours: number, minutes: num
 export class AttendanceService implements OnModuleInit {
   constructor(
     @InjectModel(Attendance.name) private attendanceModel: Model<AttendanceDocument>,
+    @InjectModel(Holiday.name) private holidayModel: Model<HolidayDocument>,
     @InjectModel(User.name) private userModel: Model<UserDocument>,
     private readonly notificationsService: NotificationsService,
   ) {}
@@ -213,6 +215,13 @@ export class AttendanceService implements OnModuleInit {
         return; // Skip Sunday
       }
 
+      // Skips Company-wide Holidays (in IST)
+      const todayISTStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(now);
+      const isCompanyHoliday = await this.holidayModel.findOne({ dateStr: todayISTStr, scope: 'all' });
+      if (isCompanyHoliday) {
+        return; // Skip Company Holiday
+      }
+
       // Only run auto-absent scanner if current time has reached or passed 07:00 PM IST
       if (now.getTime() < cutoff7PM.getTime()) {
         await this.attendanceModel.deleteMany({
@@ -231,6 +240,14 @@ export class AttendanceService implements OnModuleInit {
       }).select('_id name email role');
 
       for (const employee of activeEmployees) {
+        // Skip if today is an individual holiday for this employee
+        const isIndivHoliday = await this.holidayModel.findOne({
+          dateStr: todayISTStr,
+          scope: 'individual',
+          employee: employee._id,
+        });
+        if (isIndivHoliday) continue;
+
         // Check if attendance record exists for today (in IST range, by date field)
         const existingByDate = await this.attendanceModel.findOne({
           employee: employee._id,
@@ -806,9 +823,17 @@ export class AttendanceService implements OnModuleInit {
       const activeUsers = await this.userModel.find(userFilter).select('name email role department designation');
       const existingUserIds = new Set(attendances.map(a => a.employee?._id?.toString() || a.employee?.id?.toString() || a.employee?.toString()));
 
+      const targetDateStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(targetStart);
+      const dayHolidays = await this.holidayModel.find({ dateStr: targetDateStr });
+      const allStaffHoliday = dayHolidays.find(h => h.scope === 'all');
+
       for (const u of activeUsers) {
         if (!existingUserIds.has(u._id.toString())) {
-          const virtualStatus = isPastOrCutoff ? 'absent' : 'pending';
+          const indivHoliday = dayHolidays.find(h => h.scope === 'individual' && h.employee?.toString() === u._id.toString());
+          const isDayHoliday = !!(allStaffHoliday || indivHoliday);
+          const holidayTitle = allStaffHoliday?.title || indivHoliday?.title || 'Company Holiday';
+
+          const virtualStatus = isDayHoliday ? 'holiday' : (isPastOrCutoff ? 'absent' : 'pending');
           if (!status || status === 'all' || status === virtualStatus) {
             attendances.push({
               _id: `virtual_${virtualStatus}_${u._id}_${targetStart.getTime()}`,
@@ -818,7 +843,7 @@ export class AttendanceService implements OnModuleInit {
               checkOut: null,
               workingHours: 0,
               status: virtualStatus,
-              notes: isPastOrCutoff ? 'No Check-In Recorded (Absent)' : 'Not Checked In Yet',
+              notes: isDayHoliday ? `Holiday: ${holidayTitle}` : (isPastOrCutoff ? 'No Check-In Recorded (Absent)' : 'Not Checked In Yet'),
               totalBreakMinutes: 0,
               breaks: [],
             });
@@ -946,5 +971,103 @@ export class AttendanceService implements OnModuleInit {
     ]);
 
     return report;
+  }
+
+  async createHoliday(
+    dto: { title: string; startDate: string; endDate?: string; scope?: string; employeeId?: string; notes?: string },
+    user: any,
+  ): Promise<any> {
+    if (!dto.title || !dto.title.trim()) {
+      throw new BadRequestException('Holiday title is required');
+    }
+    if (!dto.startDate || !/^\d{4}-\d{2}-\d{2}$/.test(dto.startDate.trim())) {
+      throw new BadRequestException('Valid start date (YYYY-MM-DD) is required');
+    }
+
+    const start = new Date(dto.startDate.trim());
+    const end = dto.endDate && /^\d{4}-\d{2}-\d{2}$/.test(dto.endDate.trim()) ? new Date(dto.endDate.trim()) : start;
+
+    if (end < start) {
+      throw new BadRequestException('End date cannot be earlier than start date');
+    }
+
+    const created: any[] = [];
+    const cur = new Date(start);
+
+    while (cur <= end) {
+      const dateStr = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(cur);
+      const istStart = getStartOfISTDay(cur);
+
+      const filter: any = { dateStr, scope: dto.scope || 'all' };
+      if (dto.scope === 'individual' && dto.employeeId) {
+        filter.employee = new Types.ObjectId(dto.employeeId);
+      }
+
+      let existing = await this.holidayModel.findOne(filter);
+      if (!existing) {
+        existing = new this.holidayModel({
+          title: dto.title.trim(),
+          date: istStart,
+          dateStr,
+          scope: dto.scope || 'all',
+          employee: dto.scope === 'individual' && dto.employeeId ? new Types.ObjectId(dto.employeeId) : null,
+          createdBy: user?._id ? new Types.ObjectId(user._id) : null,
+          notes: dto.notes || '',
+        });
+        await existing.save();
+        created.push(existing);
+      }
+
+      // Clean up any pure absent records (no check-in) for this date
+      if (dto.scope === 'all') {
+        await this.attendanceModel.deleteMany({
+          date: { $gte: istStart, $lte: getEndOfISTDay(cur) },
+          status: 'absent',
+          checkIn: { $exists: false },
+        });
+      } else if (dto.employeeId) {
+        await this.attendanceModel.deleteMany({
+          employee: new Types.ObjectId(dto.employeeId),
+          date: { $gte: istStart, $lte: getEndOfISTDay(cur) },
+          status: 'absent',
+          checkIn: { $exists: false },
+        });
+      }
+
+      cur.setDate(cur.getDate() + 1);
+    }
+
+    return { count: created.length, holidays: created };
+  }
+
+  async getHolidays(year?: number, month?: number, employeeId?: string): Promise<any[]> {
+    const filter: any = {};
+    if (year && month) {
+      const pad = (n: number) => String(n).padStart(2, '0');
+      const prefix = `${year}-${pad(month)}`;
+      filter.dateStr = { $regex: `^${prefix}` };
+    } else if (year) {
+      filter.dateStr = { $regex: `^${year}` };
+    }
+
+    if (employeeId && Types.ObjectId.isValid(employeeId)) {
+      filter.$or = [{ scope: 'all' }, { scope: 'individual', employee: new Types.ObjectId(employeeId) }];
+    }
+
+    return this.holidayModel
+      .find(filter)
+      .populate('employee', 'name email role department')
+      .populate('createdBy', 'name email')
+      .sort({ dateStr: 1 });
+  }
+
+  async deleteHoliday(id: string): Promise<void> {
+    if (!Types.ObjectId.isValid(id)) {
+      throw new BadRequestException('Invalid holiday ID');
+    }
+    const holiday = await this.holidayModel.findByIdAndDelete(id);
+    if (!holiday) {
+      throw new NotFoundException('Holiday not found');
+    }
   }
 }
