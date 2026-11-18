@@ -31,6 +31,9 @@ export class Setting {
 
   @Prop({ type: MongooseSchema.Types.ObjectId, ref: 'User' })
   updatedBy: MongooseSchema.Types.ObjectId;
+
+  @Prop({ type: Array, default: [] })
+  companyHolidays: any[];
 }
 
 export const SettingSchema = SchemaFactory.createForClass(Setting);

@@ -3,7 +3,7 @@ import { MongooseModule } from '@nestjs/mongoose';
 import { AttendanceController } from './attendance.controller';
 import { AttendanceService } from './attendance.service';
 import { Attendance, AttendanceSchema } from './schemas/attendance.schema';
-import { Holiday, HolidaySchema } from './schemas/holiday.schema';
+import { Setting, SettingSchema } from '../settings/schemas/setting.schema';
 import { User, UserSchema } from '../users/schemas/user.schema';
 import { NotificationsModule } from '../notifications/notifications.module';
 
@@ -11,7 +11,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
   imports: [
     MongooseModule.forFeature([
       { name: Attendance.name, schema: AttendanceSchema },
-      { name: Holiday.name, schema: HolidaySchema },
+      { name: Setting.name, schema: SettingSchema },
       { name: User.name, schema: UserSchema },
     ]),
     NotificationsModule,
