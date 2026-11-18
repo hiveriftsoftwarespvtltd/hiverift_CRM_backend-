@@ -737,25 +737,37 @@ export class AttendanceService implements OnModuleInit {
         const istMinutes = getISTMinutes(checkInDate);
         const shiftStartMinutes = 10 * 60; // 10:00 AM IST (600 mins)
 
+        // If HR/Admin manually adjusted this record, NEVER auto-override their status
+        const isManuallyAdjusted = !!(
+          obj.notes?.includes('Adjusted by HR/Admin') ||
+          obj.notes?.includes('Manually created by HR/Admin')
+        );
+
         if (istMinutes > shiftStartMinutes) {
           const diffMinutes = istMinutes - shiftStartMinutes;
           const hours = Math.floor(diffMinutes / 60);
           const mins = diffMinutes % 60;
           obj.lateDuration = hours > 0 ? `${hours}h ${mins}m late` : `${mins}m late`;
-          obj.isLate = true;
-          // Auto-fix status ONLY if it was set to 'present' — never override manual half_day/late
-          if (obj.status === 'present') {
-            obj.status = istMinutes >= (13 * 60) ? 'half_day' : 'late';
-          }
-          // If manually set to half_day but checkIn < 1PM, still respect manual override
-          if (obj.status === 'half_day') {
-            obj.isLate = false; // half_day is not "late", it's its own status
+
+          if (isManuallyAdjusted) {
+            // Respect admin's manual override — do not change status
+            obj.isLate = (obj.status === 'late');
+          } else {
+            // Auto-fix: only override if status was erroneously set to 'present'
+            obj.isLate = true;
+            if (obj.status === 'present') {
+              obj.status = istMinutes >= (13 * 60) ? 'half_day' : 'late';
+            }
           }
         } else {
           obj.lateDuration = 'On Time';
           obj.isLate = false;
-          // If admin manually set half_day even though checkIn is on time, respect it
-          // (don't override to present)
+          // Don't override if admin manually set half_day even with on-time checkIn
+        }
+
+        // half_day is never "late" — it's its own status
+        if (obj.status === 'half_day') {
+          obj.isLate = false;
         }
 
         // Live calculation if still checked in
