@@ -139,9 +139,11 @@ export class AttendanceService implements OnModuleInit {
   async autoCheckoutExpiredShifts(): Promise<void> {
     try {
       const now = new Date();
-      // Find all records where checkOut is null/undefined
+      // Only process records from the last 2 days (today + yesterday) to avoid touching old records
+      const twoDaysAgo = new Date(now.getTime() - 2 * 24 * 60 * 60 * 1000);
       const activeAttendances = await this.attendanceModel.find({
         checkOut: { $exists: false },
+        checkIn: { $exists: true, $gte: twoDaysAgo },
       });
 
       for (const attendance of activeAttendances) {
@@ -229,21 +231,37 @@ export class AttendanceService implements OnModuleInit {
       }).select('_id name email role');
 
       for (const employee of activeEmployees) {
-        // Check if attendance record exists for today (in IST range)
-        const existing = await this.attendanceModel.findOne({
+        // Check if attendance record exists for today (in IST range, by date field)
+        const existingByDate = await this.attendanceModel.findOne({
           employee: employee._id,
           date: { $gte: startOfToday, $lte: endOfToday },
         });
 
+        // Also check if any checkIn exists today (fallback: in case date field has minor offset)
+        const existingByCheckIn = await this.attendanceModel.findOne({
+          employee: employee._id,
+          checkIn: { $gte: startOfToday, $lte: endOfToday },
+        });
+
+        const existing = existingByDate || existingByCheckIn;
+
         if (!existing) {
-          // Create explicit Absent record for today
-          await new this.attendanceModel({
+          // Only create absent if no prior absent record exists for today
+          const alreadyAbsent = await this.attendanceModel.findOne({
             employee: employee._id,
-            date: startOfToday,
+            date: { $gte: startOfToday, $lte: endOfToday },
             status: 'absent',
-            workingHours: 0,
-            notes: 'Auto-marked Absent (No check-in by 07:00 PM IST)',
-          }).save();
+          });
+          if (!alreadyAbsent) {
+            // Create explicit Absent record for today
+            await new this.attendanceModel({
+              employee: employee._id,
+              date: startOfToday,
+              status: 'absent',
+              workingHours: 0,
+              notes: 'Auto-marked Absent (No check-in by 07:00 PM IST)',
+            }).save();
+          }
         }
       }
     } catch (err) {
