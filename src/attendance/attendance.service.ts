@@ -743,13 +743,19 @@ export class AttendanceService implements OnModuleInit {
           const mins = diffMinutes % 60;
           obj.lateDuration = hours > 0 ? `${hours}h ${mins}m late` : `${mins}m late`;
           obj.isLate = true;
-          // Auto-fix status if it was erroneously set to present
+          // Auto-fix status ONLY if it was set to 'present' — never override manual half_day/late
           if (obj.status === 'present') {
             obj.status = istMinutes >= (13 * 60) ? 'half_day' : 'late';
+          }
+          // If manually set to half_day but checkIn < 1PM, still respect manual override
+          if (obj.status === 'half_day') {
+            obj.isLate = false; // half_day is not "late", it's its own status
           }
         } else {
           obj.lateDuration = 'On Time';
           obj.isLate = false;
+          // If admin manually set half_day even though checkIn is on time, respect it
+          // (don't override to present)
         }
 
         // Live calculation if still checked in
