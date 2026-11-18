@@ -574,13 +574,15 @@ export class AttendanceService implements OnModuleInit {
     }
 
     const empId = updateDto.employeeId || updateDto.userId;
-    const targetDate = updateDto.date ? new Date(updateDto.date) : null;
-    if (targetDate) targetDate.setHours(0, 0, 0, 0);
 
-    if (!attendance && empId && targetDate && Types.ObjectId.isValid(empId)) {
+    // Use IST-aware date range for finding records (matches how records are stored)
+    const targetDateStart = updateDto.date ? getStartOfISTDay(updateDto.date) : null;
+    const targetDateEnd = updateDto.date ? getEndOfISTDay(updateDto.date) : null;
+
+    if (!attendance && empId && targetDateStart && Types.ObjectId.isValid(empId)) {
       attendance = await this.attendanceModel.findOne({
         employee: new Types.ObjectId(empId),
-        date: targetDate,
+        date: { $gte: targetDateStart, $lte: targetDateEnd },
       });
     }
 
@@ -588,19 +590,20 @@ export class AttendanceService implements OnModuleInit {
       const parts = id.split('_');
       const userId = parts[2];
       const dateMs = parts[3] ? Number(parts[3]) : Date.now();
-      const recDate = new Date(dateMs);
-      recDate.setHours(0, 0, 0, 0);
+      // Use IST-aware start-of-day for the date from virtual ID
+      const recDateStart = getStartOfISTDay(new Date(dateMs));
+      const recDateEnd = getEndOfISTDay(new Date(dateMs));
 
       if (userId && Types.ObjectId.isValid(userId)) {
         attendance = await this.attendanceModel.findOne({
           employee: new Types.ObjectId(userId),
-          date: recDate,
+          date: { $gte: recDateStart, $lte: recDateEnd },
         });
 
         if (!attendance) {
           attendance = new this.attendanceModel({
             employee: new Types.ObjectId(userId),
-            date: recDate,
+            date: recDateStart,
             status: 'present',
             workingHours: 0,
             notes: 'Manually created by HR/Admin override',
@@ -610,11 +613,10 @@ export class AttendanceService implements OnModuleInit {
     }
 
     if (!attendance && empId && Types.ObjectId.isValid(empId)) {
-      const recDate = targetDate || new Date();
-      recDate.setHours(0, 0, 0, 0);
+      const recDateStart = targetDateStart || getStartOfISTDay(new Date());
       attendance = new this.attendanceModel({
         employee: new Types.ObjectId(empId),
-        date: recDate,
+        date: recDateStart,
         status: 'present',
         workingHours: 0,
         notes: 'Manually created by HR/Admin override',
