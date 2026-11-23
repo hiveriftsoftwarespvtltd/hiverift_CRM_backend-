@@ -216,6 +216,12 @@ export class WhatsappCampaignsController {
     return await this.campaignsService.stopCampaign(id);
   }
 
+  @Delete('campaigns/:id')
+  @Roles('super_admin', 'superadmin', 'admin')
+  async deleteCampaign(@Param('id') id: string) {
+    return await this.campaignsService.deleteCampaign(id);
+  }
+
   @Get('campaigns/:id/live')
   @Roles('super_admin', 'superadmin', 'admin')
   async getCampaignLiveProgress(@Param('id') id: string) {

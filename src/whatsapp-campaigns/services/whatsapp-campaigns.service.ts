@@ -225,7 +225,7 @@ export class WhatsappCampaignsService {
   // 3. CAMPAIGNS LIST & DETAILS
   // ==========================================
   async findAllCampaigns(query: any) {
-    const { status, search, page = 1, limit = 20 } = query;
+    const { status, search, dateFilter, startDate, endDate, page = 1, limit = 20 } = query;
     const filter: any = {};
 
     if (status && status !== 'all') {
@@ -239,6 +239,76 @@ export class WhatsappCampaignsService {
       ];
     }
 
+    // Date Filtering: today | yesterday | tomorrow | this_week | this_month | custom
+    if (dateFilter && dateFilter !== 'all') {
+      const now = new Date();
+      if (dateFilter === 'today') {
+        const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
+        const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
+        const dateCond = { $gte: start, $lte: end };
+        filter.$or = filter.$or
+          ? [{ $and: [{ $or: filter.$or }, { $or: [{ createdAt: dateCond }, { scheduledAt: dateCond }] }] }]
+          : [{ createdAt: dateCond }, { scheduledAt: dateCond }];
+      } else if (dateFilter === 'yesterday') {
+        const yest = new Date(now);
+        yest.setDate(yest.getDate() - 1);
+        const start = new Date(yest.getFullYear(), yest.getMonth(), yest.getDate(), 0, 0, 0, 0);
+        const end = new Date(yest.getFullYear(), yest.getMonth(), yest.getDate(), 23, 59, 59, 999);
+        const dateCond = { $gte: start, $lte: end };
+        filter.$or = filter.$or
+          ? [{ $and: [{ $or: filter.$or }, { $or: [{ createdAt: dateCond }, { scheduledAt: dateCond }] }] }]
+          : [{ createdAt: dateCond }, { scheduledAt: dateCond }];
+      } else if (dateFilter === 'tomorrow') {
+        const tom = new Date(now);
+        tom.setDate(tom.getDate() + 1);
+        const start = new Date(tom.getFullYear(), tom.getMonth(), tom.getDate(), 0, 0, 0, 0);
+        const end = new Date(tom.getFullYear(), tom.getMonth(), tom.getDate(), 23, 59, 59, 999);
+        const dateCond = { $gte: start, $lte: end };
+        filter.$or = filter.$or
+          ? [{ $and: [{ $or: filter.$or }, { $or: [{ scheduledAt: dateCond }, { createdAt: dateCond }] }] }]
+          : [{ scheduledAt: dateCond }, { createdAt: dateCond }];
+      } else if (dateFilter === 'this_week') {
+        const curr = new Date(now);
+        const first = curr.getDate() - curr.getDay() + (curr.getDay() === 0 ? -6 : 1);
+        const start = new Date(curr.setDate(first));
+        start.setHours(0, 0, 0, 0);
+        const end = new Date(start);
+        end.setDate(end.getDate() + 6);
+        end.setHours(23, 59, 59, 999);
+        filter.createdAt = { $gte: start, $lte: end };
+      } else if (dateFilter === 'this_month') {
+        const start = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
+        const end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
+        filter.createdAt = { $gte: start, $lte: end };
+      } else if (dateFilter === 'custom' && (startDate || endDate)) {
+        const dateCond: any = {};
+        if (startDate) {
+          const s = new Date(startDate);
+          s.setHours(0, 0, 0, 0);
+          dateCond.$gte = s;
+        }
+        if (endDate) {
+          const e = new Date(endDate);
+          e.setHours(23, 59, 59, 999);
+          dateCond.$lte = e;
+        }
+        filter.createdAt = dateCond;
+      }
+    } else if (startDate || endDate) {
+      const dateCond: any = {};
+      if (startDate) {
+        const s = new Date(startDate);
+        s.setHours(0, 0, 0, 0);
+        dateCond.$gte = s;
+      }
+      if (endDate) {
+        const e = new Date(endDate);
+        e.setHours(23, 59, 59, 999);
+        dateCond.$lte = e;
+      }
+      filter.createdAt = dateCond;
+    }
+
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
     const skip = (pageNum - 1) * limitNum;
@@ -246,7 +316,7 @@ export class WhatsappCampaignsService {
     const [campaigns, total] = await Promise.all([
       this.campaignModel
         .find(filter)
-        .populate('templateId', 'displayName name')
+        .populate('templateId', 'displayName name category language')
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limitNum)
@@ -269,6 +339,17 @@ export class WhatsappCampaignsService {
       .lean();
     if (!campaign) throw new NotFoundException('Campaign not found');
     return campaign;
+  }
+
+  async deleteCampaign(id: string) {
+    const campaign = await this.campaignModel.findById(id);
+    if (!campaign) throw new NotFoundException('Campaign not found');
+
+    this.queueService.signalCampaignStop(id);
+    await this.recipientModel.deleteMany({ campaignId: new Types.ObjectId(id) });
+    await this.campaignModel.findByIdAndDelete(id);
+
+    return { success: true, message: `Campaign '${campaign.name}' deleted successfully` };
   }
 
   // ==========================================
