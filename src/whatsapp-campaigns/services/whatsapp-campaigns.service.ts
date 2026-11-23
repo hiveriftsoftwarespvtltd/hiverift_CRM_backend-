@@ -135,7 +135,7 @@ export class WhatsappCampaignsService {
     const count = await this.campaignModel.countDocuments();
     const campaignId = `CMP-${new Date().toISOString().slice(0, 7).replace('-', '')}-${String(count + 1).padStart(4, '0')}`;
 
-    const delaySeconds = Math.max(5, dto.delaySeconds || 10);
+    const delaySeconds = Math.max(1, dto.delaySeconds || 10);
     const isNow = !dto.scheduleType || dto.scheduleType === 'now';
     const status = isNow ? CampaignStatus.RUNNING : CampaignStatus.SCHEDULED;
 
