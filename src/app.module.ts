@@ -39,6 +39,7 @@ import { ProcurementModule } from './procurement/procurement.module';
 import { PayrollModule } from './payroll/payroll.module';
 import { ReconciliationModule } from './reconciliation/reconciliation.module';
 import { ExecutiveModule } from './executive/executive.module';
+import { WhatsappCampaignsModule } from './whatsapp-campaigns/whatsapp-campaigns.module';
 
 @Module({
   imports: [
@@ -102,6 +103,7 @@ import { ExecutiveModule } from './executive/executive.module';
     PayrollModule,
     ReconciliationModule,
     ExecutiveModule,
+    WhatsappCampaignsModule,
   ],
 })
 export class AppModule {}

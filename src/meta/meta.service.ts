@@ -218,6 +218,52 @@ export class MetaService {
         let errorMsg = responseData?.error?.message || `HTTP ${response.status} ${response.statusText}`;
         const errorCode = responseData?.error?.code;
 
+        // If parameter count mismatch error (e.g. template expected 0 parameters, like hello_world), retry without parameters
+        if (errorCode === 132000 && payload.template?.components?.length > 0) {
+          this.logger.warn(`WhatsApp Template [${templateName}] parameter count mismatch. Retrying with 0 parameters...`);
+          const retryPayload = JSON.parse(JSON.stringify(payload));
+          delete retryPayload.template.components;
+          try {
+            const retryRes = await fetch(url, {
+              method: 'POST',
+              headers: {
+                'Authorization': `Bearer ${pageAccessToken}`,
+                'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(retryPayload),
+            });
+            const retryData = await retryRes.json().catch(() => ({}));
+            if (retryRes.ok) {
+              const retryWamid = retryData?.messages?.[0]?.id || `wamid.template.${Date.now()}`;
+              this.logger.log(`WhatsApp template [${templateName}] delivered to ${cleanPhone} without params. Message ID: ${retryWamid}`);
+              return { success: true, whatsappMessageId: retryWamid };
+            }
+            // If still failed due to language translation, also try alternate language with 0 params
+            const subCode = retryData?.error?.code;
+            if (subCode === 132001) {
+              const altLang = (languageCode === 'en' || languageCode === 'en_GB') ? 'en_US' : 'en';
+              retryPayload.template.language.code = altLang;
+              const altRes = await fetch(url, {
+                method: 'POST',
+                headers: {
+                  'Authorization': `Bearer ${pageAccessToken}`,
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify(retryPayload),
+              });
+              const altData = await altRes.json().catch(() => ({}));
+              if (altRes.ok) {
+                const altWamid = altData?.messages?.[0]?.id || `wamid.template.${Date.now()}`;
+                this.logger.log(`WhatsApp template [${templateName}] delivered to ${cleanPhone} on fallback '${altLang}' without params. Message ID: ${altWamid}`);
+                return { success: true, whatsappMessageId: altWamid };
+              }
+            }
+            errorMsg = retryData?.error?.message || errorMsg;
+          } catch (retryErr: any) {
+            this.logger.warn(`0-param retry failed: ${retryErr?.message || retryErr}`);
+          }
+        }
+
         // If language mismatch error (e.g. template exists in en_US or en), retry with alternate language code
         if (errorCode === 132001 || errorMsg.includes('does not exist in') || errorMsg.includes('translation')) {
           const alternateLang = (languageCode === 'en' || languageCode === 'en_GB') ? 'en_US' : 'en';

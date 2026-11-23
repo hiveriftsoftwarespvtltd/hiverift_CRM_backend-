@@ -232,6 +232,44 @@ export class MetaWebhookService {
                 { 'messages.whatsappMessageId': wamid },
                 { $set: { 'messages.$.status': statusName } },
               );
+
+              // Also update WhatsApp Campaign Recipient status tracking
+              try {
+                const recipientModel = this.leadModel.db.models['WhatsappCampaignRecipient'];
+                const campaignModel = this.leadModel.db.models['WhatsappCampaign'];
+                if (recipientModel && campaignModel) {
+                  const rec = await recipientModel.findOne({ whatsappMessageId: wamid });
+                  if (rec) {
+                    const oldSt = rec.status;
+                    const newSt = String(statusName).toLowerCase();
+                    if (newSt === 'delivered' && oldSt !== 'delivered' && oldSt !== 'read') {
+                      rec.status = 'delivered';
+                      rec.deliveredAt = st.timestamp ? new Date(parseInt(st.timestamp, 10) * 1000) : new Date();
+                      await rec.save();
+                      await campaignModel.findByIdAndUpdate(rec.campaignId, { $inc: { deliveredCount: 1 } });
+                    } else if (newSt === 'read' && oldSt !== 'read') {
+                      rec.status = 'read';
+                      rec.readAt = st.timestamp ? new Date(parseInt(st.timestamp, 10) * 1000) : new Date();
+                      if (!rec.deliveredAt) rec.deliveredAt = rec.readAt;
+                      await rec.save();
+                      const incObj: any = { readCount: 1 };
+                      if (oldSt !== 'delivered') incObj.deliveredCount = 1;
+                      await campaignModel.findByIdAndUpdate(rec.campaignId, { $inc: incObj });
+                    } else if (newSt === 'failed' && oldSt !== 'failed') {
+                      rec.status = 'failed';
+                      rec.failedAt = st.timestamp ? new Date(parseInt(st.timestamp, 10) * 1000) : new Date();
+                      if (st.errors && st.errors.length > 0) {
+                        rec.errorMessage = st.errors[0]?.message || st.errors[0]?.title || 'Meta delivery failure';
+                        rec.errorCode = String(st.errors[0]?.code || '');
+                      }
+                      await rec.save();
+                      await campaignModel.findByIdAndUpdate(rec.campaignId, { $inc: { failedCount: 1 } });
+                    }
+                  }
+                }
+              } catch (waErr: any) {
+                this.logger.warn(`Campaign webhook sync warning: ${waErr?.message}`);
+              }
             }
           }
 
