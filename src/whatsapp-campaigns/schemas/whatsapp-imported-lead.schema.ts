@@ -41,10 +41,21 @@ export class WhatsappImportedLead {
   @Prop({ type: Types.ObjectId, ref: 'Lead', index: true })
   crmLeadId?: Types.ObjectId; // Reference if synced to CRM leads
 
-  @Prop({ type: Types.ObjectId, ref: 'User' })
+  @Prop({ type: Types.ObjectId, ref: 'User', index: true })
   createdBy?: Types.ObjectId;
+
+  @Prop({ type: Types.ObjectId, ref: 'User', index: true })
+  ownerId?: Types.ObjectId; // Ownership identifier for access control
+
+  @Prop({ trim: true })
+  createdByName?: string;
+
+  @Prop({ trim: true, default: 'sales' })
+  createdByRole?: string;
 }
 
 export const WhatsappImportedLeadSchema = SchemaFactory.createForClass(WhatsappImportedLead);
 WhatsappImportedLeadSchema.index({ phoneNumber: 1, importBatchId: 1 });
 WhatsappImportedLeadSchema.index({ createdAt: -1 });
+WhatsappImportedLeadSchema.index({ createdBy: 1, createdAt: -1 });
+WhatsappImportedLeadSchema.index({ ownerId: 1, createdAt: -1 });

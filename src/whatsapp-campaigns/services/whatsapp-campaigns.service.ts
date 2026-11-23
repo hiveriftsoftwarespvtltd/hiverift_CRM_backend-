@@ -3,12 +3,16 @@ import {
   Logger,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import * as xlsx from 'xlsx';
 
 import { Lead, LeadDocument } from '../../leads/schemas/lead.schema';
+import { User, UserDocument } from '../../users/schemas/user.schema';
+import { AuditService } from '../../audit/audit.service';
+import { getUserAccessScope } from '../whatsapp-permissions.util';
 import {
   WhatsappImportedLead,
   WhatsappImportedLeadDocument,
@@ -46,13 +50,153 @@ export class WhatsappCampaignsService {
     private readonly importedLeadModel: Model<WhatsappImportedLeadDocument>,
     @InjectModel(WhatsappTemplate.name)
     private readonly templateModel: Model<WhatsappTemplateDocument>,
+    @InjectModel(User.name)
+    private readonly userModel: Model<UserDocument>,
     private readonly queueService: WhatsappQueueService,
+    private readonly auditService: AuditService,
   ) {}
+
+  // ==========================================
+  // HELPER: VALIDATE CAMPAIGN ACCESS
+  // ==========================================
+  private async validateCampaignAccess(
+    id: string,
+    user: any,
+    action = 'view',
+  ): Promise<{ campaign: WhatsappCampaignDocument; scope: any }> {
+    if (!id || !Types.ObjectId.isValid(id)) {
+      throw new NotFoundException('Invalid campaign ID');
+    }
+    const scope = getUserAccessScope(user);
+    const campaign = await this.campaignModel.findById(id);
+    if (!campaign) {
+      throw new NotFoundException('Campaign not found');
+    }
+
+    if (scope.isSalesEmployee) {
+      const isOwner =
+        (campaign.createdBy && campaign.createdBy.toString() === scope.userId) ||
+        (campaign.ownerId && campaign.ownerId.toString() === scope.userId);
+      if (!isOwner) {
+        await this.auditService.log({
+          userId: scope.userId,
+          action: 'unauthorized_campaign_access_attempt',
+          module: 'whatsapp_campaigns',
+          recordId: campaign.campaignId || id,
+          description: `Sales employee ${scope.userName} attempted unauthorized ${action} on campaign ${campaign.campaignId || id}`,
+        });
+        throw new ForbiddenException(`You do not have permission to ${action} this campaign`);
+      }
+    }
+    return { campaign, scope };
+  }
 
   // ==========================================
   // 1. DASHBOARD STATS
   // ==========================================
-  async getDashboardStats() {
+  async getDashboardStats(user: any) {
+    const scope = getUserAccessScope(user);
+
+    if (scope.isSalesEmployee) {
+      // ----------------------------------------------------
+      // Sales Employee: STRICTLY PERSONAL METRICS ONLY
+      // ----------------------------------------------------
+      const myCampaigns = await this.campaignModel
+        .find({ $or: [{ createdBy: scope.userObjId }, { ownerId: scope.userObjId }] }, { _id: 1 })
+        .lean();
+      const myCampaignIds = myCampaigns.map((c) => c._id);
+
+      const [
+        myAssignedCrmLeads,
+        myImportedLeads,
+        myTotalCampaigns,
+        recipientsSummary,
+        recentCampaigns,
+        recentRecipients,
+      ] = await Promise.all([
+        this.leadModel.countDocuments({
+          $or: [{ assignedTo: scope.userObjId }, { assignedTo: scope.userId }],
+        }),
+        this.importedLeadModel.countDocuments({
+          $or: [{ createdBy: scope.userObjId }, { ownerId: scope.userObjId }],
+        }),
+        this.campaignModel.countDocuments({
+          $or: [{ createdBy: scope.userObjId }, { ownerId: scope.userObjId }],
+        }),
+        this.recipientModel.aggregate([
+          {
+            $match: {
+              $or: [
+                { campaignId: { $in: myCampaignIds } },
+                { ownerId: scope.userObjId },
+              ],
+            },
+          },
+          {
+            $group: {
+              _id: '$status',
+              count: { $sum: 1 },
+            },
+          },
+        ]),
+        this.campaignModel
+          .find({ $or: [{ createdBy: scope.userObjId }, { ownerId: scope.userObjId }] })
+          .sort({ createdAt: -1 })
+          .limit(5)
+          .populate('templateId', 'displayName name')
+          .lean(),
+        this.recipientModel
+          .find({
+            $or: [
+              { campaignId: { $in: myCampaignIds } },
+              { ownerId: scope.userObjId },
+            ],
+            status: { $in: ['sent', 'delivered', 'read', 'failed'] },
+          })
+          .sort({ updatedAt: -1 })
+          .limit(10)
+          .populate('campaignId', 'name')
+          .lean(),
+      ]);
+
+      const statusCounts: Record<string, number> = {
+        sent: 0,
+        delivered: 0,
+        read: 0,
+        failed: 0,
+        pending: 0,
+        skipped: 0,
+      };
+
+      recipientsSummary.forEach((r) => {
+        if (r._id && statusCounts[r._id] !== undefined) {
+          statusCounts[r._id] = r.count;
+        }
+      });
+
+      const totalProcessed = (statusCounts.sent || 0) + (statusCounts.delivered || 0) + (statusCounts.read || 0);
+      const totalDelivered = (statusCounts.delivered || 0) + (statusCounts.read || 0);
+
+      return {
+        isSalesEmployee: true,
+        scopeName: scope.userName,
+        totalCrmLeads: myAssignedCrmLeads,
+        totalImportedLeads: myImportedLeads,
+        totalCampaigns: myTotalCampaigns,
+        totalMessagesSent: totalProcessed,
+        totalMessagesDelivered: totalDelivered,
+        totalMessagesRead: statusCounts.read || 0,
+        totalFailedMessages: statusCounts.failed || 0,
+        totalPendingMessages: statusCounts.pending || 0,
+        totalSkippedMessages: statusCounts.skipped || 0,
+        recentCampaigns,
+        recentActivity: recentRecipients,
+      };
+    }
+
+    // ----------------------------------------------------
+    // Sales Manager / Super Admin: TEAM-WIDE METRICS
+    // ----------------------------------------------------
     const [
       totalCrmLeads,
       totalImportedLeads,
@@ -60,6 +204,7 @@ export class WhatsappCampaignsService {
       recipientsSummary,
       recentCampaigns,
       recentRecipients,
+      employeeCampaignCounts,
     ] = await Promise.all([
       this.leadModel.countDocuments(),
       this.importedLeadModel.countDocuments(),
@@ -77,6 +222,7 @@ export class WhatsappCampaignsService {
         .sort({ createdAt: -1 })
         .limit(5)
         .populate('templateId', 'displayName name')
+        .populate('createdBy', 'name email role')
         .lean(),
       this.recipientModel
         .find({ status: { $in: ['sent', 'delivered', 'read', 'failed'] } })
@@ -84,6 +230,21 @@ export class WhatsappCampaignsService {
         .limit(10)
         .populate('campaignId', 'name')
         .lean(),
+      this.campaignModel.aggregate([
+        {
+          $group: {
+            _id: '$createdBy',
+            name: { $first: '$createdByName' },
+            campaignCount: { $sum: 1 },
+            totalRecipients: { $sum: '$totalRecipients' },
+            sentCount: { $sum: '$sentCount' },
+            deliveredCount: { $sum: '$deliveredCount' },
+            failedCount: { $sum: '$failedCount' },
+          },
+        },
+        { $sort: { campaignCount: -1 } },
+        { $limit: 10 },
+      ]),
     ]);
 
     const statusCounts: Record<string, number> = {
@@ -105,6 +266,9 @@ export class WhatsappCampaignsService {
     const totalDelivered = (statusCounts.delivered || 0) + (statusCounts.read || 0);
 
     return {
+      isSalesEmployee: false,
+      isSalesHead: scope.isSalesHead,
+      isSuperAdmin: scope.isSuperAdmin,
       totalCrmLeads,
       totalImportedLeads,
       totalCampaigns,
@@ -116,6 +280,7 @@ export class WhatsappCampaignsService {
       totalSkippedMessages: statusCounts.skipped || 0,
       recentCampaigns,
       recentActivity: recentRecipients,
+      employeeActivity: employeeCampaignCounts,
     };
   }
 
@@ -123,6 +288,8 @@ export class WhatsappCampaignsService {
   // 2. CAMPAIGN CREATION WIZARD
   // ==========================================
   async createCampaign(dto: CreateCampaignDto, user: any) {
+    const scope = getUserAccessScope(user);
+
     if (!dto.recipientIds || dto.recipientIds.length === 0) {
       throw new BadRequestException('Please select at least one lead for the campaign');
     }
@@ -139,46 +306,89 @@ export class WhatsappCampaignsService {
     const isNow = !dto.scheduleType || dto.scheduleType === 'now';
     const status = isNow ? CampaignStatus.RUNNING : CampaignStatus.SCHEDULED;
 
-    const campaign = new this.campaignModel({
-      campaignId,
-      name: dto.name,
-      description: dto.description,
-      type: dto.type || 'bulk_broadcast',
-      leadSource: dto.leadSource,
-      templateId: new Types.ObjectId(dto.templateId),
-      templateSnapshot: template,
-      variableMappings: dto.variableMappings || {},
-      scheduleType: dto.scheduleType || 'now',
-      scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
-      delaySeconds,
-      status,
-      totalRecipients: dto.recipientIds.length,
-      pendingCount: dto.recipientIds.length,
-      sentCount: 0,
-      deliveredCount: 0,
-      readCount: 0,
-      failedCount: 0,
-      skippedCount: 0,
-      startedAt: isNow ? new Date() : undefined,
-      createdBy: user?._id ? new Types.ObjectId(user._id) : undefined,
-      createdByName: user?.name || 'Super Admin',
-    });
+    // Validate recipient IDs
+    const validIds = dto.recipientIds
+      .filter((id) => Types.ObjectId.isValid(id))
+      .map((id) => new Types.ObjectId(id));
 
-    const savedCampaign = await campaign.save();
+    if (validIds.length === 0 || validIds.length !== dto.recipientIds.length) {
+      throw new BadRequestException('One or more selected lead IDs are invalid');
+    }
 
-    // Populate Recipients
+    // Populate Recipients with strict ownership validation
     const recipientsToInsert: any[] = [];
 
     if (dto.leadSource === CampaignLeadSource.CRM_LEADS) {
       const crmLeads = await this.leadModel
-        .find({ _id: { $in: dto.recipientIds.map((id) => new Types.ObjectId(id)) } })
+        .find({ _id: { $in: validIds } })
         .lean();
+
+      if (crmLeads.length !== validIds.length) {
+        throw new BadRequestException('One or more selected CRM leads could not be found');
+      }
+
+      // STRICT OWNERSHIP ENFORCEMENT: Sales Employee can only use their assigned CRM leads
+      if (scope.isSalesEmployee) {
+        const unauthorizedLead = crmLeads.find(
+          (lead) =>
+            !lead.assignedTo ||
+            (lead.assignedTo.toString() !== scope.userId &&
+              lead.assignedTo.toString() !== scope.userObjId.toString()),
+        );
+
+        if (unauthorizedLead) {
+          await this.auditService.log({
+            userId: scope.userId,
+            action: 'unauthorized_crm_lead_campaign_attempt',
+            module: 'whatsapp_campaigns',
+            recordId: unauthorizedLead._id.toString(),
+            description: `Sales employee ${scope.userName} attempted to create campaign with unauthorized CRM lead ${unauthorizedLead._id}`,
+          });
+          throw new ForbiddenException(
+            'Security violation: You can only create campaigns for CRM leads assigned to you. Unauthorized leads were rejected.',
+          );
+        }
+      }
+
+      // Pre-create campaign document
+      const campaign = new this.campaignModel({
+        campaignId,
+        name: dto.name,
+        description: dto.description,
+        type: dto.type || 'bulk_broadcast',
+        leadSource: dto.leadSource,
+        templateId: new Types.ObjectId(dto.templateId),
+        templateSnapshot: template,
+        variableMappings: dto.variableMappings || {},
+        scheduleType: dto.scheduleType || 'now',
+        scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
+        delaySeconds,
+        status,
+        totalRecipients: dto.recipientIds.length,
+        pendingCount: dto.recipientIds.length,
+        sentCount: 0,
+        deliveredCount: 0,
+        readCount: 0,
+        failedCount: 0,
+        skippedCount: 0,
+        startedAt: isNow ? new Date() : undefined,
+        createdBy: scope.userObjId,
+        ownerId: scope.userObjId,
+        createdByName: scope.userName,
+        createdByRole: scope.userRole,
+      });
+
+      const savedCampaign = await campaign.save();
 
       for (const lead of crmLeads) {
         recipientsToInsert.push({
           campaignId: savedCampaign._id,
           recipientSource: 'crm_lead',
           crmLeadId: lead._id,
+          sourceType: 'crm_lead',
+          sourceLeadId: lead._id,
+          assignedEmployeeId: lead.assignedTo || undefined, // IMPORTANT: preserves original CRM lead assignment
+          ownerId: scope.userObjId,
           name: lead.name,
           phoneNumber: lead.phone,
           email: lead.email,
@@ -188,16 +398,92 @@ export class WhatsappCampaignsService {
           maxRetries: 2,
         });
       }
+
+      await this.recipientModel.insertMany(recipientsToInsert);
+
+      if (isNow) {
+        this.queueService.enqueueCampaign(savedCampaign._id.toString());
+      }
+
+      await this.auditService.log({
+        userId: scope.userId,
+        action: 'create_campaign',
+        module: 'whatsapp_campaigns',
+        recordId: savedCampaign._id.toString(),
+        description: `Created campaign ${savedCampaign.name} (${savedCampaign.campaignId}) with ${recipientsToInsert.length} CRM recipients`,
+      });
+
+      return savedCampaign;
     } else {
+      // IMPORTED LEADS
       const importedLeads = await this.importedLeadModel
-        .find({ _id: { $in: dto.recipientIds.map((id) => new Types.ObjectId(id)) } })
+        .find({ _id: { $in: validIds } })
         .lean();
+
+      if (importedLeads.length !== validIds.length) {
+        throw new BadRequestException('One or more selected imported leads could not be found');
+      }
+
+      // STRICT OWNERSHIP ENFORCEMENT: Sales Employee can only use their owned/imported leads
+      if (scope.isSalesEmployee) {
+        const unauthorizedLead = importedLeads.find(
+          (lead) =>
+            lead.createdBy?.toString() !== scope.userId &&
+            lead.ownerId?.toString() !== scope.userId,
+        );
+
+        if (unauthorizedLead) {
+          await this.auditService.log({
+            userId: scope.userId,
+            action: 'unauthorized_imported_lead_campaign_attempt',
+            module: 'whatsapp_campaigns',
+            recordId: unauthorizedLead._id.toString(),
+            description: `Sales employee ${scope.userName} attempted to create campaign with unauthorized imported lead ${unauthorizedLead._id}`,
+          });
+          throw new ForbiddenException(
+            'Security violation: You can only create campaigns for WhatsApp leads imported by you. Unauthorized leads were rejected.',
+          );
+        }
+      }
+
+      const campaign = new this.campaignModel({
+        campaignId,
+        name: dto.name,
+        description: dto.description,
+        type: dto.type || 'bulk_broadcast',
+        leadSource: dto.leadSource,
+        templateId: new Types.ObjectId(dto.templateId),
+        templateSnapshot: template,
+        variableMappings: dto.variableMappings || {},
+        scheduleType: dto.scheduleType || 'now',
+        scheduledAt: dto.scheduledAt ? new Date(dto.scheduledAt) : undefined,
+        delaySeconds,
+        status,
+        totalRecipients: dto.recipientIds.length,
+        pendingCount: dto.recipientIds.length,
+        sentCount: 0,
+        deliveredCount: 0,
+        readCount: 0,
+        failedCount: 0,
+        skippedCount: 0,
+        startedAt: isNow ? new Date() : undefined,
+        createdBy: scope.userObjId,
+        ownerId: scope.userObjId,
+        createdByName: scope.userName,
+        createdByRole: scope.userRole,
+      });
+
+      const savedCampaign = await campaign.save();
 
       for (const lead of importedLeads) {
         recipientsToInsert.push({
           campaignId: savedCampaign._id,
           recipientSource: 'imported_lead',
           importedLeadId: lead._id,
+          sourceType: 'imported_lead',
+          sourceLeadId: lead._id,
+          assignedEmployeeId: lead.ownerId || lead.createdBy || undefined,
+          ownerId: scope.userObjId,
           name: lead.name,
           phoneNumber: lead.phoneNumber,
           email: lead.email,
@@ -207,36 +493,63 @@ export class WhatsappCampaignsService {
           maxRetries: 2,
         });
       }
-    }
 
-    if (recipientsToInsert.length > 0) {
       await this.recipientModel.insertMany(recipientsToInsert);
-    }
 
-    // Trigger queue worker if starting now
-    if (isNow) {
-      this.queueService.enqueueCampaign(savedCampaign._id.toString());
-    }
+      if (isNow) {
+        this.queueService.enqueueCampaign(savedCampaign._id.toString());
+      }
 
-    return savedCampaign;
+      await this.auditService.log({
+        userId: scope.userId,
+        action: 'create_campaign',
+        module: 'whatsapp_campaigns',
+        recordId: savedCampaign._id.toString(),
+        description: `Created campaign ${savedCampaign.name} (${savedCampaign.campaignId}) with ${recipientsToInsert.length} imported recipients`,
+      });
+
+      return savedCampaign;
+    }
   }
 
   // ==========================================
   // 3. CAMPAIGNS LIST & DETAILS
   // ==========================================
-  async findAllCampaigns(query: any) {
-    const { status, search, dateFilter, startDate, endDate, page = 1, limit = 20 } = query;
-    const filter: any = {};
+  async findAllCampaigns(query: any, user: any) {
+    const scope = getUserAccessScope(user);
+    const { status, search, dateFilter, startDate, endDate, employeeId, page = 1, limit = 20 } = query;
+    const andConditions: any[] = [];
+
+    // Role-based campaign filtering:
+    // Sales Employee can see ONLY their own campaigns
+    if (scope.isSalesEmployee) {
+      andConditions.push({
+        $or: [
+          { createdBy: scope.userObjId },
+          { ownerId: scope.userObjId },
+        ],
+      });
+    } else if (employeeId && employeeId !== 'all' && Types.ObjectId.isValid(employeeId)) {
+      // Sales Head / Manager / Super Admin can filter by specific employee
+      andConditions.push({
+        $or: [
+          { createdBy: new Types.ObjectId(employeeId) },
+          { ownerId: new Types.ObjectId(employeeId) },
+        ],
+      });
+    }
 
     if (status && status !== 'all') {
-      filter.status = status;
+      andConditions.push({ status });
     }
 
     if (search) {
-      filter.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { campaignId: { $regex: search, $options: 'i' } },
-      ];
+      andConditions.push({
+        $or: [
+          { name: { $regex: search, $options: 'i' } },
+          { campaignId: { $regex: search, $options: 'i' } },
+        ],
+      });
     }
 
     // Date Filtering: today | yesterday | tomorrow | this_week | this_month | custom
@@ -246,27 +559,27 @@ export class WhatsappCampaignsService {
         const start = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 0, 0, 0, 0);
         const end = new Date(now.getFullYear(), now.getMonth(), now.getDate(), 23, 59, 59, 999);
         const dateCond = { $gte: start, $lte: end };
-        filter.$or = filter.$or
-          ? [{ $and: [{ $or: filter.$or }, { $or: [{ createdAt: dateCond }, { scheduledAt: dateCond }] }] }]
-          : [{ createdAt: dateCond }, { scheduledAt: dateCond }];
+        andConditions.push({
+          $or: [{ createdAt: dateCond }, { scheduledAt: dateCond }],
+        });
       } else if (dateFilter === 'yesterday') {
         const yest = new Date(now);
         yest.setDate(yest.getDate() - 1);
         const start = new Date(yest.getFullYear(), yest.getMonth(), yest.getDate(), 0, 0, 0, 0);
         const end = new Date(yest.getFullYear(), yest.getMonth(), yest.getDate(), 23, 59, 59, 999);
         const dateCond = { $gte: start, $lte: end };
-        filter.$or = filter.$or
-          ? [{ $and: [{ $or: filter.$or }, { $or: [{ createdAt: dateCond }, { scheduledAt: dateCond }] }] }]
-          : [{ createdAt: dateCond }, { scheduledAt: dateCond }];
+        andConditions.push({
+          $or: [{ createdAt: dateCond }, { scheduledAt: dateCond }],
+        });
       } else if (dateFilter === 'tomorrow') {
         const tom = new Date(now);
         tom.setDate(tom.getDate() + 1);
         const start = new Date(tom.getFullYear(), tom.getMonth(), tom.getDate(), 0, 0, 0, 0);
         const end = new Date(tom.getFullYear(), tom.getMonth(), tom.getDate(), 23, 59, 59, 999);
         const dateCond = { $gte: start, $lte: end };
-        filter.$or = filter.$or
-          ? [{ $and: [{ $or: filter.$or }, { $or: [{ scheduledAt: dateCond }, { createdAt: dateCond }] }] }]
-          : [{ scheduledAt: dateCond }, { createdAt: dateCond }];
+        andConditions.push({
+          $or: [{ scheduledAt: dateCond }, { createdAt: dateCond }],
+        });
       } else if (dateFilter === 'this_week') {
         const curr = new Date(now);
         const first = curr.getDate() - curr.getDay() + (curr.getDay() === 0 ? -6 : 1);
@@ -275,11 +588,11 @@ export class WhatsappCampaignsService {
         const end = new Date(start);
         end.setDate(end.getDate() + 6);
         end.setHours(23, 59, 59, 999);
-        filter.createdAt = { $gte: start, $lte: end };
+        andConditions.push({ createdAt: { $gte: start, $lte: end } });
       } else if (dateFilter === 'this_month') {
         const start = new Date(now.getFullYear(), now.getMonth(), 1, 0, 0, 0, 0);
         const end = new Date(now.getFullYear(), now.getMonth() + 1, 0, 23, 59, 59, 999);
-        filter.createdAt = { $gte: start, $lte: end };
+        andConditions.push({ createdAt: { $gte: start, $lte: end } });
       } else if (dateFilter === 'custom' && (startDate || endDate)) {
         const dateCond: any = {};
         if (startDate) {
@@ -292,7 +605,7 @@ export class WhatsappCampaignsService {
           e.setHours(23, 59, 59, 999);
           dateCond.$lte = e;
         }
-        filter.createdAt = dateCond;
+        andConditions.push({ createdAt: dateCond });
       }
     } else if (startDate || endDate) {
       const dateCond: any = {};
@@ -306,8 +619,10 @@ export class WhatsappCampaignsService {
         e.setHours(23, 59, 59, 999);
         dateCond.$lte = e;
       }
-      filter.createdAt = dateCond;
+      andConditions.push({ createdAt: dateCond });
     }
+
+    const filter = andConditions.length > 0 ? { $and: andConditions } : {};
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
@@ -317,6 +632,7 @@ export class WhatsappCampaignsService {
       this.campaignModel
         .find(filter)
         .populate('templateId', 'displayName name category language')
+        .populate('createdBy', 'name email role')
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limitNum)
@@ -332,22 +648,31 @@ export class WhatsappCampaignsService {
     };
   }
 
-  async findOneCampaign(id: string) {
+  async findOneCampaign(id: string, user: any) {
+    await this.validateCampaignAccess(id, user, 'view');
     const campaign = await this.campaignModel
       .findById(id)
       .populate('templateId')
+      .populate('createdBy', 'name email role')
       .lean();
     if (!campaign) throw new NotFoundException('Campaign not found');
     return campaign;
   }
 
-  async deleteCampaign(id: string) {
-    const campaign = await this.campaignModel.findById(id);
-    if (!campaign) throw new NotFoundException('Campaign not found');
+  async deleteCampaign(id: string, user: any) {
+    const { campaign, scope } = await this.validateCampaignAccess(id, user, 'delete');
 
     this.queueService.signalCampaignStop(id);
     await this.recipientModel.deleteMany({ campaignId: new Types.ObjectId(id) });
     await this.campaignModel.findByIdAndDelete(id);
+
+    await this.auditService.log({
+      userId: scope.userId,
+      action: 'delete_campaign',
+      module: 'whatsapp_campaigns',
+      recordId: id,
+      description: `Campaign ${campaign.name} (${campaign.campaignId}) deleted by ${scope.userName}`,
+    });
 
     return { success: true, message: `Campaign '${campaign.name}' deleted successfully` };
   }
@@ -355,9 +680,8 @@ export class WhatsappCampaignsService {
   // ==========================================
   // 4. CAMPAIGN CONTROLS (PAUSE / RESUME / STOP)
   // ==========================================
-  async pauseCampaign(id: string) {
-    const campaign = await this.campaignModel.findById(id);
-    if (!campaign) throw new NotFoundException('Campaign not found');
+  async pauseCampaign(id: string, user: any) {
+    const { campaign, scope } = await this.validateCampaignAccess(id, user, 'pause');
 
     if (campaign.status === CampaignStatus.COMPLETED) {
       return { success: true, message: 'Campaign is already completed', campaign };
@@ -383,12 +707,19 @@ export class WhatsappCampaignsService {
       { $set: { status: RecipientStatus.PENDING } },
     );
 
+    await this.auditService.log({
+      userId: scope.userId,
+      action: 'pause_campaign',
+      module: 'whatsapp_campaigns',
+      recordId: id,
+      description: `Campaign ${campaign.name} paused by ${scope.userName}`,
+    });
+
     return { success: true, message: 'Campaign paused successfully', campaign };
   }
 
-  async resumeCampaign(id: string) {
-    const campaign = await this.campaignModel.findById(id);
-    if (!campaign) throw new NotFoundException('Campaign not found');
+  async resumeCampaign(id: string, user: any) {
+    const { campaign, scope } = await this.validateCampaignAccess(id, user, 'resume');
 
     if (campaign.status === CampaignStatus.COMPLETED) {
       return { success: true, message: 'Campaign is already completed', campaign };
@@ -407,12 +738,20 @@ export class WhatsappCampaignsService {
     await campaign.save();
 
     this.queueService.enqueueCampaign(id);
+
+    await this.auditService.log({
+      userId: scope.userId,
+      action: 'resume_campaign',
+      module: 'whatsapp_campaigns',
+      recordId: id,
+      description: `Campaign ${campaign.name} resumed by ${scope.userName}`,
+    });
+
     return { success: true, message: 'Campaign resumed successfully', campaign };
   }
 
-  async stopCampaign(id: string) {
-    const campaign = await this.campaignModel.findById(id);
-    if (!campaign) throw new NotFoundException('Campaign not found');
+  async stopCampaign(id: string, user: any) {
+    const { campaign, scope } = await this.validateCampaignAccess(id, user, 'stop');
 
     if (campaign.status === CampaignStatus.COMPLETED || campaign.status === CampaignStatus.STOPPED) {
       return { success: true, message: `Campaign is already ${campaign.status}`, campaign };
@@ -431,9 +770,17 @@ export class WhatsappCampaignsService {
         status: { $in: [RecipientStatus.PENDING, RecipientStatus.PROCESSING] },
       },
       {
-        $set: { status: RecipientStatus.SKIPPED, errorMessage: 'Campaign stopped by admin' },
+        $set: { status: RecipientStatus.SKIPPED, errorMessage: `Campaign stopped by ${scope.userName}` },
       },
     );
+
+    await this.auditService.log({
+      userId: scope.userId,
+      action: 'stop_campaign',
+      module: 'whatsapp_campaigns',
+      recordId: id,
+      description: `Campaign ${campaign.name} stopped by ${scope.userName}`,
+    });
 
     return { success: true, message: 'Campaign stopped successfully', campaign };
   }
@@ -441,9 +788,8 @@ export class WhatsappCampaignsService {
   // ==========================================
   // 5. LIVE PROGRESS
   // ==========================================
-  async getLiveProgress(id: string) {
-    const campaign = await this.campaignModel.findById(id).lean();
-    if (!campaign) throw new NotFoundException('Campaign not found');
+  async getLiveProgress(id: string, user: any) {
+    const { campaign } = await this.validateCampaignAccess(id, user, 'view_progress');
 
     const total = campaign.totalRecipients || 0;
     const sent = campaign.sentCount || 0;
@@ -474,7 +820,9 @@ export class WhatsappCampaignsService {
   // ==========================================
   // 6. CAMPAIGN REPORTS & SEPARATE LISTS
   // ==========================================
-  async getReportRecipients(campaignId: string, status?: string, query?: any) {
+  async getReportRecipients(campaignId: string, status?: string, query?: any, user?: any) {
+    await this.validateCampaignAccess(campaignId, user, 'view_report');
+
     const filter: any = { campaignId: new Types.ObjectId(campaignId) };
 
     if (status && status !== 'all') {
@@ -511,7 +859,9 @@ export class WhatsappCampaignsService {
     };
   }
 
-  async exportReportCsv(campaignId: string, status?: string) {
+  async exportReportCsv(campaignId: string, status?: string, user?: any) {
+    await this.validateCampaignAccess(campaignId, user, 'export_report');
+
     const filter: any = { campaignId: new Types.ObjectId(campaignId) };
     if (status && status !== 'all') {
       filter.status = status;

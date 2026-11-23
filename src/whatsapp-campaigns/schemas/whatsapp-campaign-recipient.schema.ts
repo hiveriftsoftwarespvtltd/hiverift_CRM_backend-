@@ -21,11 +21,23 @@ export class WhatsappCampaignRecipient {
   @Prop({ required: true, enum: ['crm_lead', 'imported_lead'] })
   recipientSource: string;
 
+  @Prop({ type: String })
+  sourceType?: string; // 'crm_lead' | 'imported_lead'
+
+  @Prop({ type: Types.ObjectId, index: true })
+  sourceLeadId?: Types.ObjectId;
+
   @Prop({ type: Types.ObjectId, ref: 'Lead', index: true })
   crmLeadId?: Types.ObjectId;
 
   @Prop({ type: Types.ObjectId, ref: 'WhatsappImportedLead', index: true })
   importedLeadId?: Types.ObjectId;
+
+  @Prop({ type: Types.ObjectId, ref: 'User', index: true })
+  assignedEmployeeId?: Types.ObjectId; // Lead assignee (for CRM lead) or importer
+
+  @Prop({ type: Types.ObjectId, ref: 'User', index: true })
+  ownerId?: Types.ObjectId; // Campaign creator/owner
 
   @Prop({ required: true, trim: true })
   name: string;
@@ -79,3 +91,5 @@ export class WhatsappCampaignRecipient {
 export const WhatsappCampaignRecipientSchema = SchemaFactory.createForClass(WhatsappCampaignRecipient);
 WhatsappCampaignRecipientSchema.index({ campaignId: 1, status: 1 });
 WhatsappCampaignRecipientSchema.index({ whatsappMessageId: 1 });
+WhatsappCampaignRecipientSchema.index({ assignedEmployeeId: 1 });
+WhatsappCampaignRecipientSchema.index({ ownerId: 1 });

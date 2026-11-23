@@ -13,6 +13,9 @@ const pdfParse = require('pdf-parse');
 
 import { Lead, LeadDocument, LeadSource } from '../../leads/schemas/lead.schema';
 import { LeadsService } from '../../leads/leads.service';
+import { User, UserDocument } from '../../users/schemas/user.schema';
+import { AuditService } from '../../audit/audit.service';
+import { getUserAccessScope } from '../whatsapp-permissions.util';
 import {
   WhatsappImportedLead,
   WhatsappImportedLeadDocument,
@@ -45,32 +48,58 @@ export class WhatsappLeadsService {
     private readonly importedLeadModel: Model<WhatsappImportedLeadDocument>,
     @InjectModel(WhatsappImportBatch.name)
     private readonly batchModel: Model<WhatsappImportBatchDocument>,
+    @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
     private readonly leadsService: LeadsService,
+    private readonly auditService: AuditService,
   ) {}
 
   // ==========================================
   // 1. CRM LEADS (READ-ONLY FOR CAMPAIGNS)
   // ==========================================
   async getCrmLeads(query: any, user: any) {
-    const { search, status, source, page = 1, limit = 50 } = query;
-    const filter: any = {};
+    const scope = getUserAccessScope(user);
+    const { search, status, source, assignedTo, page = 1, limit = 50 } = query;
+    const andConditions: any[] = [];
+
+    // Role-based filtering for CRM Leads:
+    // Sales Employee sees strictly ONLY their assigned CRM leads
+    if (scope.isSalesEmployee) {
+      andConditions.push({
+        $or: [
+          { assignedTo: scope.userObjId },
+          { assignedTo: scope.userId },
+        ],
+      });
+    } else if (assignedTo && assignedTo !== 'all' && Types.ObjectId.isValid(assignedTo)) {
+      // Sales Head / Manager / Super Admin can filter by specific employee
+      andConditions.push({
+        $or: [
+          { assignedTo: new Types.ObjectId(assignedTo) },
+          { assignedTo: assignedTo },
+        ],
+      });
+    }
 
     if (search) {
-      filter.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { phone: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-        { company: { $regex: search, $options: 'i' } },
-      ];
+      andConditions.push({
+        $or: [
+          { name: { $regex: search, $options: 'i' } },
+          { phone: { $regex: search, $options: 'i' } },
+          { email: { $regex: search, $options: 'i' } },
+          { company: { $regex: search, $options: 'i' } },
+        ],
+      });
     }
 
     if (status && status !== 'all') {
-      filter.status = status;
+      andConditions.push({ status });
     }
 
     if (source && source !== 'all') {
-      filter.source = source;
+      andConditions.push({ source });
     }
+
+    const filter = andConditions.length > 0 ? { $and: andConditions } : {};
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(500, Math.max(1, parseInt(limit, 10) || 50));
@@ -89,7 +118,7 @@ export class WhatsappLeadsService {
           createdAt: 1,
           leadId: 1,
         })
-        .populate('assignedTo', 'name email')
+        .populate('assignedTo', 'name email role')
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limitNum)
@@ -108,26 +137,50 @@ export class WhatsappLeadsService {
   // ==========================================
   // 2. IMPORTED LEADS (SEPARATE DATABASE CRUD)
   // ==========================================
-  async getImportedLeads(query: any) {
-    const { search, batchId, status, page = 1, limit = 50 } = query;
-    const filter: any = {};
+  async getImportedLeads(query: any, user: any) {
+    const scope = getUserAccessScope(user);
+    const { search, batchId, status, employeeId, page = 1, limit = 50 } = query;
+    const andConditions: any[] = [];
+
+    // Role-based filtering for Imported Leads:
+    // Sales Employee sees strictly ONLY leads imported/owned by them
+    if (scope.isSalesEmployee) {
+      andConditions.push({
+        $or: [
+          { createdBy: scope.userObjId },
+          { ownerId: scope.userObjId },
+        ],
+      });
+    } else if (employeeId && employeeId !== 'all' && Types.ObjectId.isValid(employeeId)) {
+      // Sales Head / Manager / Super Admin can filter by specific employee
+      andConditions.push({
+        $or: [
+          { createdBy: new Types.ObjectId(employeeId) },
+          { ownerId: new Types.ObjectId(employeeId) },
+        ],
+      });
+    }
 
     if (search) {
-      filter.$or = [
-        { name: { $regex: search, $options: 'i' } },
-        { phoneNumber: { $regex: search, $options: 'i' } },
-        { email: { $regex: search, $options: 'i' } },
-        { company: { $regex: search, $options: 'i' } },
-      ];
+      andConditions.push({
+        $or: [
+          { name: { $regex: search, $options: 'i' } },
+          { phoneNumber: { $regex: search, $options: 'i' } },
+          { email: { $regex: search, $options: 'i' } },
+          { company: { $regex: search, $options: 'i' } },
+        ],
+      });
     }
 
     if (batchId) {
-      filter.importBatchId = batchId;
+      andConditions.push({ importBatchId: batchId });
     }
 
     if (status && status !== 'all') {
-      filter.status = status;
+      andConditions.push({ status });
     }
+
+    const filter = andConditions.length > 0 ? { $and: andConditions } : {};
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(500, Math.max(1, parseInt(limit, 10) || 50));
@@ -136,6 +189,7 @@ export class WhatsappLeadsService {
     const [leads, total] = await Promise.all([
       this.importedLeadModel
         .find(filter)
+        .populate('createdBy', 'name email role')
         .sort({ createdAt: -1 })
         .skip(skip)
         .limit(limitNum)
@@ -151,7 +205,8 @@ export class WhatsappLeadsService {
     };
   }
 
-  async createImportedLead(dto: CreateImportedLeadDto, userId?: string) {
+  async createImportedLead(dto: CreateImportedLeadDto, user: any) {
+    const scope = getUserAccessScope(user);
     const cleanPhone = sanitizePhoneNumber(dto.phoneNumber);
     if (!cleanPhone || cleanPhone.length !== 10) {
       throw new BadRequestException('Phone number must be a valid 10-digit number');
@@ -166,40 +221,149 @@ export class WhatsappLeadsService {
       ...dto,
       phoneNumber: cleanPhone,
       countryCode: dto.countryCode || '91',
-      createdBy: userId ? new Types.ObjectId(userId) : undefined,
+      createdBy: scope.userObjId,
+      ownerId: scope.userObjId,
+      createdByName: scope.userName,
+      createdByRole: scope.userRole,
     });
 
-    return await lead.save();
+    const saved = await lead.save();
+
+    await this.auditService.log({
+      userId: scope.userId,
+      action: 'create_imported_lead',
+      module: 'whatsapp_campaigns',
+      recordId: saved._id.toString(),
+      description: `Created imported lead ${saved.name} (${cleanPhone})`,
+    });
+
+    return saved;
   }
 
-  async updateImportedLead(id: string, dto: UpdateImportedLeadDto) {
+  async updateImportedLead(id: string, dto: UpdateImportedLeadDto, user: any) {
+    const scope = getUserAccessScope(user);
+    if (!Types.ObjectId.isValid(id)) {
+      throw new NotFoundException('Invalid lead ID');
+    }
+
+    const lead = await this.importedLeadModel.findById(id);
+    if (!lead) {
+      throw new NotFoundException('Imported lead not found');
+    }
+
+    // Sales Employee can edit ONLY their own imported leads
+    if (scope.isSalesEmployee) {
+      const isOwner =
+        lead.createdBy?.toString() === scope.userId || lead.ownerId?.toString() === scope.userId;
+      if (!isOwner) {
+        await this.auditService.log({
+          userId: scope.userId,
+          action: 'unauthorized_lead_update_attempt',
+          module: 'whatsapp_campaigns',
+          recordId: id,
+          description: `Unauthorized attempt by ${scope.userName} to edit imported lead owned by someone else.`,
+        });
+        throw new ForbiddenException('You do not have permission to edit this imported lead');
+      }
+    }
+
     if (dto.phoneNumber) {
       const cleanPhone = sanitizePhoneNumber(dto.phoneNumber);
       if (!cleanPhone || cleanPhone.length !== 10) {
         throw new BadRequestException('Phone number must be a valid 10-digit number');
       }
-      dto.phoneNumber = cleanPhone;
+      lead.phoneNumber = cleanPhone;
     }
 
-    const updated = await this.importedLeadModel.findByIdAndUpdate(id, { $set: dto }, { new: true });
-    if (!updated) {
-      throw new NotFoundException('Imported lead not found');
-    }
-    return updated;
+    if (dto.name) lead.name = dto.name;
+    if (dto.email !== undefined) lead.email = dto.email;
+    if (dto.company !== undefined) lead.company = dto.company;
+    if (dto.countryCode) lead.countryCode = dto.countryCode;
+    if (dto.whatsappOptIn !== undefined) lead.whatsappOptIn = dto.whatsappOptIn;
+    if (dto.status) lead.status = dto.status;
+
+    const saved = await lead.save();
+
+    await this.auditService.log({
+      userId: scope.userId,
+      action: 'update_imported_lead',
+      module: 'whatsapp_campaigns',
+      recordId: id,
+      description: `Updated imported lead ${saved.name} (${saved.phoneNumber})`,
+    });
+
+    return saved;
   }
 
-  async deleteImportedLead(id: string) {
-    const res = await this.importedLeadModel.findByIdAndDelete(id);
-    if (!res) throw new NotFoundException('Imported lead not found');
+  async deleteImportedLead(id: string, user: any) {
+    const scope = getUserAccessScope(user);
+    if (!Types.ObjectId.isValid(id)) {
+      throw new NotFoundException('Invalid lead ID');
+    }
+
+    const lead = await this.importedLeadModel.findById(id);
+    if (!lead) {
+      throw new NotFoundException('Imported lead not found');
+    }
+
+    // Sales Employee can delete ONLY their own imported leads
+    if (scope.isSalesEmployee) {
+      const isOwner =
+        lead.createdBy?.toString() === scope.userId || lead.ownerId?.toString() === scope.userId;
+      if (!isOwner) {
+        await this.auditService.log({
+          userId: scope.userId,
+          action: 'unauthorized_lead_delete_attempt',
+          module: 'whatsapp_campaigns',
+          recordId: id,
+          description: `Unauthorized attempt by ${scope.userName} to delete imported lead owned by someone else.`,
+        });
+        throw new ForbiddenException('You do not have permission to delete this imported lead');
+      }
+    }
+
+    await this.importedLeadModel.findByIdAndDelete(id);
+
+    await this.auditService.log({
+      userId: scope.userId,
+      action: 'delete_imported_lead',
+      module: 'whatsapp_campaigns',
+      recordId: id,
+      description: `Deleted imported lead ${lead.name} (${lead.phoneNumber})`,
+    });
+
     return { success: true, message: 'Imported lead deleted successfully' };
   }
 
-  async bulkDeleteImportedLeads(ids: string[]) {
+  async bulkDeleteImportedLeads(ids: string[], user: any) {
+    const scope = getUserAccessScope(user);
     if (!Array.isArray(ids) || ids.length === 0) {
       throw new BadRequestException('No lead IDs provided for deletion');
     }
-    const res = await this.importedLeadModel.deleteMany({ _id: { $in: ids.map((id) => new Types.ObjectId(id)) } });
-    return { success: true, deletedCount: res.deletedCount };
+
+    const validIds = ids.filter((id) => Types.ObjectId.isValid(id)).map((id) => new Types.ObjectId(id));
+    if (validIds.length === 0) {
+      return { success: true, deletedCount: 0 };
+    }
+
+    const deleteFilter: any = { _id: { $in: validIds } };
+    if (scope.isSalesEmployee) {
+      deleteFilter.$or = [
+        { createdBy: scope.userObjId },
+        { ownerId: scope.userObjId },
+      ];
+    }
+
+    const res = await this.importedLeadModel.deleteMany(deleteFilter);
+
+    await this.auditService.log({
+      userId: scope.userId,
+      action: 'bulk_delete_imported_leads',
+      module: 'whatsapp_campaigns',
+      description: `Bulk deleted ${res.deletedCount} imported leads`,
+    });
+
+    return { success: true, message: `Successfully deleted ${res.deletedCount} leads`, deletedCount: res.deletedCount };
   }
 
   // ==========================================
@@ -310,11 +474,16 @@ export class WhatsappLeadsService {
     }
 
     // STRICT SECURITY CHECK: Super Admin only for saveToCrm
-    const userRole = (user?.role || '').toLowerCase().trim();
-    const isSuperAdmin = ['super_admin', 'superadmin', 'admin'].includes(userRole);
-    const allowSaveToCrm = isSuperAdmin && saveToCrm === true;
+    const scope = getUserAccessScope(user);
+    const allowSaveToCrm = scope.isSuperAdmin && saveToCrm === true;
 
-    if (saveToCrm && !isSuperAdmin) {
+    if (saveToCrm && !scope.isSuperAdmin) {
+      await this.auditService.log({
+        userId: scope.userId,
+        action: 'unauthorized_crm_sync_attempt',
+        module: 'whatsapp_campaigns',
+        description: `Blocked unauthorized attempt by ${scope.userName} (${scope.userRole}) to sync imported leads directly into main CRM pipeline.`,
+      });
       throw new ForbiddenException('Only Super Admin can save imported leads directly to main CRM Leads.');
     }
 
@@ -375,7 +544,10 @@ export class WhatsappLeadsService {
         whatsappOptIn: true,
         whatsappOptInAt: new Date(),
         status: 'active',
-        createdBy: user?._id ? new Types.ObjectId(user._id) : undefined,
+        createdBy: scope.userObjId,
+        ownerId: scope.userObjId,
+        createdByName: scope.userName,
+        createdByRole: scope.userRole,
       };
 
       leadsToInsert.push(importedDoc);
@@ -405,7 +577,7 @@ export class WhatsappLeadsService {
       try {
         const crmResult = await this.leadsService.importLeads(
           validCrmLeadsToCreate,
-          user?._id?.toString() || '',
+          scope.userId,
           user,
         );
         crmCreatedCount = crmResult.importedCount;
@@ -437,10 +609,18 @@ export class WhatsappLeadsService {
       skippedCount: duplicateCount + invalidCount,
       savedToCrm: allowSaveToCrm,
       crmCreatedCount,
-      importedBy: user?._id ? new Types.ObjectId(user._id) : undefined,
-      importedByName: user?.name || 'Super Admin',
+      importedBy: scope.userObjId,
+      importedByName: scope.userName,
     });
     await batchRecord.save();
+
+    await this.auditService.log({
+      userId: scope.userId,
+      action: 'execute_import_leads',
+      module: 'whatsapp_campaigns',
+      recordId: batchId,
+      description: `Imported ${savedImportedLeads.length} leads by ${scope.userName} (Batch: ${batchId})`,
+    });
 
     return {
       success: true,
@@ -460,17 +640,32 @@ export class WhatsappLeadsService {
   // ==========================================
   // 5. BATCH HISTORY & EXPORT
   // ==========================================
-  async getImportBatches(query: any) {
-    return await this.batchModel.find().sort({ createdAt: -1 }).limit(100).lean();
+  async getImportBatches(query: any, user: any) {
+    const scope = getUserAccessScope(user);
+    const filter: any = {};
+    if (scope.isSalesEmployee) {
+      filter.importedBy = scope.userObjId;
+    }
+    return await this.batchModel.find(filter).sort({ createdAt: -1 }).limit(100).lean();
   }
 
-  async exportImportedLeadsCsv(ids?: string[]) {
+  async exportImportedLeadsCsv(ids?: string[], user?: any) {
+    const scope = user ? getUserAccessScope(user) : null;
     const filter: any = {};
     if (ids && ids.length > 0) {
-      filter._id = { $in: ids.map((id) => new Types.ObjectId(id)) };
+      filter._id = { $in: ids.filter((id) => Types.ObjectId.isValid(id)).map((id) => new Types.ObjectId(id)) };
     }
+
+    // Strict ownership protection: Sales employees only export their own leads
+    if (scope && scope.isSalesEmployee) {
+      filter.$or = [
+        { createdBy: scope.userObjId },
+        { ownerId: scope.userObjId },
+      ];
+    }
+
     const leads = await this.importedLeadModel.find(filter).sort({ createdAt: -1 }).lean();
-    const rows = leads.map((l) => ({
+    const rows = leads.map((l: any) => ({
       Name: l.name,
       Phone: l.phoneNumber,
       Email: l.email || '',
@@ -478,11 +673,32 @@ export class WhatsappLeadsService {
       Source: l.source,
       BatchId: l.importBatchId || '',
       Status: l.status,
-      CreatedDate: (l as any).createdAt ? new Date((l as any).createdAt).toLocaleDateString() : '',
+      ImportedBy: l.createdByName || '',
+      CreatedDate: l.createdAt ? new Date(l.createdAt).toLocaleDateString() : '',
     }));
 
     const worksheet = xlsx.utils.json_to_sheet(rows);
     return xlsx.utils.sheet_to_csv(worksheet);
+  }
+
+  // ==========================================
+  // 6. SALES EMPLOYEES DIRECTORY (FOR MANAGERS)
+  // ==========================================
+  async getSalesEmployeesList(user: any) {
+    const scope = getUserAccessScope(user);
+    // Sales Employee only gets themselves
+    if (scope.isSalesEmployee) {
+      return [{ _id: scope.userId, name: scope.userName, role: scope.userRole }];
+    }
+
+    // Sales Head / Manager / Admin gets all active sales & management users
+    return await this.userModel
+      .find(
+        { isActive: true, role: { $in: ['sales', 'management', 'admin', 'super_admin'] } },
+        { name: 1, email: 1, role: 1, designation: 1, department: 1 },
+      )
+      .sort({ name: 1 })
+      .lean();
   }
 
   // --- Helper Methods ---

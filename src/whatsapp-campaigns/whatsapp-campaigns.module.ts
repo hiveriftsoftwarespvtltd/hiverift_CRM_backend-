@@ -26,9 +26,11 @@ import {
 } from './schemas/whatsapp-setting.schema';
 
 import { Lead, LeadSchema } from '../leads/schemas/lead.schema';
+import { User, UserSchema } from '../users/schemas/user.schema';
 import { LeadsModule } from '../leads/leads.module';
 import { MetaModule } from '../meta/meta.module';
 import { NotificationsModule } from '../notifications/notifications.module';
+import { AuditModule } from '../audit/audit.module';
 
 import { WhatsappCampaignsController } from './whatsapp-campaigns.controller';
 import { WhatsappLeadsService } from './services/whatsapp-leads.service';
@@ -47,10 +49,12 @@ import { WhatsappSettingsService } from './services/whatsapp-settings.service';
       { name: WhatsappCampaignRecipient.name, schema: WhatsappCampaignRecipientSchema },
       { name: WhatsappSetting.name, schema: WhatsappSettingSchema },
       { name: Lead.name, schema: LeadSchema },
+      { name: User.name, schema: UserSchema },
     ]),
     forwardRef(() => LeadsModule),
     MetaModule,
     NotificationsModule,
+    AuditModule,
   ],
   controllers: [WhatsappCampaignsController],
   providers: [

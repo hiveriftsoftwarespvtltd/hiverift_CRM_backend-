@@ -43,9 +43,9 @@ export class WhatsappCampaignsController {
   // DASHBOARD
   // ==========================================
   @Get('dashboard-stats')
-  @Roles('super_admin', 'superadmin', 'admin')
-  async getDashboardStats() {
-    const data = await this.campaignsService.getDashboardStats();
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
+  async getDashboardStats(@CurrentUser() user: any) {
+    const data = await this.campaignsService.getDashboardStats(user);
     return { success: true, data };
   }
 
@@ -53,7 +53,7 @@ export class WhatsappCampaignsController {
   // CRM LEADS (READ-ONLY REFERENCE)
   // ==========================================
   @Get('crm-leads')
-  @Roles('super_admin', 'superadmin', 'admin')
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
   async getCrmLeads(@Query() query: any, @CurrentUser() user: any) {
     const data = await this.leadsService.getCrmLeads(query, user);
     return { success: true, data };
@@ -63,43 +63,43 @@ export class WhatsappCampaignsController {
   // IMPORTED LEADS (SEPARATE DATABASE)
   // ==========================================
   @Get('imported-leads')
-  @Roles('super_admin', 'superadmin', 'admin')
-  async getImportedLeads(@Query() query: any) {
-    const data = await this.leadsService.getImportedLeads(query);
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
+  async getImportedLeads(@Query() query: any, @CurrentUser() user: any) {
+    const data = await this.leadsService.getImportedLeads(query, user);
     return { success: true, data };
   }
 
   @Post('imported-leads')
-  @Roles('super_admin', 'superadmin', 'admin')
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
   async createImportedLead(@Body() dto: CreateImportedLeadDto, @CurrentUser() user: any) {
-    const data = await this.leadsService.createImportedLead(dto, user?._id?.toString());
+    const data = await this.leadsService.createImportedLead(dto, user);
     return { success: true, message: 'Lead added to WhatsApp imported leads', data };
   }
 
   @Put('imported-leads/:id')
-  @Roles('super_admin', 'superadmin', 'admin')
-  async updateImportedLead(@Param('id') id: string, @Body() dto: UpdateImportedLeadDto) {
-    const data = await this.leadsService.updateImportedLead(id, dto);
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
+  async updateImportedLead(@Param('id') id: string, @Body() dto: UpdateImportedLeadDto, @CurrentUser() user: any) {
+    const data = await this.leadsService.updateImportedLead(id, dto, user);
     return { success: true, message: 'Lead updated', data };
   }
 
   @Delete('imported-leads/:id')
-  @Roles('super_admin', 'superadmin', 'admin')
-  async deleteImportedLead(@Param('id') id: string) {
-    return await this.leadsService.deleteImportedLead(id);
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
+  async deleteImportedLead(@Param('id') id: string, @CurrentUser() user: any) {
+    return await this.leadsService.deleteImportedLead(id, user);
   }
 
   @Post('imported-leads/bulk-delete')
-  @Roles('super_admin', 'superadmin', 'admin')
-  async bulkDeleteImportedLeads(@Body() body: { ids: string[] }) {
-    return await this.leadsService.bulkDeleteImportedLeads(body.ids || []);
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
+  async bulkDeleteImportedLeads(@Body() body: { ids: string[] }, @CurrentUser() user: any) {
+    return await this.leadsService.bulkDeleteImportedLeads(body.ids || [], user);
   }
 
   @Get('imported-leads/export')
-  @Roles('super_admin', 'superadmin', 'admin')
-  async exportImportedLeads(@Res() res: Response, @Query('ids') idsStr?: string) {
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
+  async exportImportedLeads(@Res() res: Response, @Query('ids') idsStr?: string, @CurrentUser() user?: any) {
     const ids = idsStr ? idsStr.split(',').filter(Boolean) : undefined;
-    const csvData = await this.leadsService.exportImportedLeadsCsv(ids);
+    const csvData = await this.leadsService.exportImportedLeadsCsv(ids, user);
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename=whatsapp_imported_leads_${Date.now()}.csv`);
     return res.send(csvData);
@@ -109,7 +109,7 @@ export class WhatsappCampaignsController {
   // FILE IMPORT & PARSING (CSV, XLSX, PDF, TXT, DOCX)
   // ==========================================
   @Post('parse-file')
-  @Roles('super_admin', 'superadmin', 'admin')
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
   @UseInterceptors(FileInterceptor('file'))
   async parseFile(@UploadedFile() file: Express.Multer.File) {
     const data = await this.leadsService.parseFileForPreview(file);
@@ -117,16 +117,23 @@ export class WhatsappCampaignsController {
   }
 
   @Post('import')
-  @Roles('super_admin', 'superadmin', 'admin')
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
   async executeImport(@Body() body: any, @CurrentUser() user: any) {
     const data = await this.leadsService.executeImport(body, user);
     return { success: true, data };
   }
 
   @Get('import-batches')
-  @Roles('super_admin', 'superadmin', 'admin')
-  async getImportBatches(@Query() query: any) {
-    const data = await this.leadsService.getImportBatches(query);
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
+  async getImportBatches(@Query() query: any, @CurrentUser() user: any) {
+    const data = await this.leadsService.getImportBatches(query, user);
+    return { success: true, data };
+  }
+
+  @Get('sales-employees')
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
+  async getSalesEmployees(@CurrentUser() user: any) {
+    const data = await this.leadsService.getSalesEmployeesList(user);
     return { success: true, data };
   }
 
@@ -134,41 +141,41 @@ export class WhatsappCampaignsController {
   // TEMPLATES MANAGEMENT
   // ==========================================
   @Get('templates')
-  @Roles('super_admin', 'superadmin', 'admin')
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
   async getTemplates(@Query() query: any) {
     const data = await this.templatesService.findAll(query);
     return { success: true, data };
   }
 
   @Get('templates/:id')
-  @Roles('super_admin', 'superadmin', 'admin')
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
   async getTemplate(@Param('id') id: string) {
     const data = await this.templatesService.findOne(id);
     return { success: true, data };
   }
 
   @Post('templates')
-  @Roles('super_admin', 'superadmin', 'admin')
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
   async createTemplate(@Body() dto: CreateTemplateDto, @CurrentUser() user: any) {
     const data = await this.templatesService.create(dto, user?._id?.toString());
     return { success: true, message: 'Template created successfully', data };
   }
 
   @Put('templates/:id')
-  @Roles('super_admin', 'superadmin', 'admin')
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
   async updateTemplate(@Param('id') id: string, @Body() dto: UpdateTemplateDto) {
     const data = await this.templatesService.update(id, dto);
     return { success: true, message: 'Template updated', data };
   }
 
   @Delete('templates/:id')
-  @Roles('super_admin', 'superadmin', 'admin')
+  @Roles('super_admin', 'superadmin', 'admin', 'management')
   async deleteTemplate(@Param('id') id: string) {
     return await this.templatesService.delete(id);
   }
 
   @Post('templates/sync')
-  @Roles('super_admin', 'superadmin', 'admin')
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
   async syncMetaTemplates() {
     const data = await this.templatesService.syncMetaTemplates();
     return { success: true, data };
@@ -178,76 +185,78 @@ export class WhatsappCampaignsController {
   // CAMPAIGNS
   // ==========================================
   @Get('campaigns')
-  @Roles('super_admin', 'superadmin', 'admin')
-  async getCampaigns(@Query() query: any) {
-    const data = await this.campaignsService.findAllCampaigns(query);
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
+  async getCampaigns(@Query() query: any, @CurrentUser() user: any) {
+    const data = await this.campaignsService.findAllCampaigns(query, user);
     return { success: true, data };
   }
 
   @Post('campaigns')
-  @Roles('super_admin', 'superadmin', 'admin')
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
   async createCampaign(@Body() dto: CreateCampaignDto, @CurrentUser() user: any) {
     const data = await this.campaignsService.createCampaign(dto, user);
     return { success: true, message: 'Campaign created successfully', data };
   }
 
   @Get('campaigns/:id')
-  @Roles('super_admin', 'superadmin', 'admin')
-  async getCampaign(@Param('id') id: string) {
-    const data = await this.campaignsService.findOneCampaign(id);
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
+  async getCampaign(@Param('id') id: string, @CurrentUser() user: any) {
+    const data = await this.campaignsService.findOneCampaign(id, user);
     return { success: true, data };
   }
 
   @Post('campaigns/:id/pause')
-  @Roles('super_admin', 'superadmin', 'admin')
-  async pauseCampaign(@Param('id') id: string) {
-    return await this.campaignsService.pauseCampaign(id);
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
+  async pauseCampaign(@Param('id') id: string, @CurrentUser() user: any) {
+    return await this.campaignsService.pauseCampaign(id, user);
   }
 
   @Post('campaigns/:id/resume')
-  @Roles('super_admin', 'superadmin', 'admin')
-  async resumeCampaign(@Param('id') id: string) {
-    return await this.campaignsService.resumeCampaign(id);
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
+  async resumeCampaign(@Param('id') id: string, @CurrentUser() user: any) {
+    return await this.campaignsService.resumeCampaign(id, user);
   }
 
   @Post('campaigns/:id/stop')
-  @Roles('super_admin', 'superadmin', 'admin')
-  async stopCampaign(@Param('id') id: string) {
-    return await this.campaignsService.stopCampaign(id);
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
+  async stopCampaign(@Param('id') id: string, @CurrentUser() user: any) {
+    return await this.campaignsService.stopCampaign(id, user);
   }
 
   @Delete('campaigns/:id')
-  @Roles('super_admin', 'superadmin', 'admin')
-  async deleteCampaign(@Param('id') id: string) {
-    return await this.campaignsService.deleteCampaign(id);
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
+  async deleteCampaign(@Param('id') id: string, @CurrentUser() user: any) {
+    return await this.campaignsService.deleteCampaign(id, user);
   }
 
   @Get('campaigns/:id/live')
-  @Roles('super_admin', 'superadmin', 'admin')
-  async getCampaignLiveProgress(@Param('id') id: string) {
-    const data = await this.campaignsService.getLiveProgress(id);
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
+  async getCampaignLiveProgress(@Param('id') id: string, @CurrentUser() user: any) {
+    const data = await this.campaignsService.getLiveProgress(id, user);
     return { success: true, data };
   }
 
   @Get('campaigns/:id/reports')
-  @Roles('super_admin', 'superadmin', 'admin')
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
   async getCampaignReport(
     @Param('id') id: string,
     @Query('status') status?: string,
     @Query() query?: any,
+    @CurrentUser() user?: any,
   ) {
-    const data = await this.campaignsService.getReportRecipients(id, status, query);
+    const data = await this.campaignsService.getReportRecipients(id, status, query, user);
     return { success: true, data };
   }
 
   @Get('campaigns/:id/reports/export')
-  @Roles('super_admin', 'superadmin', 'admin')
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
   async exportCampaignReport(
     @Param('id') id: string,
     @Res() res: Response,
     @Query('status') status?: string,
+    @CurrentUser() user?: any,
   ) {
-    const csvData = await this.campaignsService.exportReportCsv(id, status);
+    const csvData = await this.campaignsService.exportReportCsv(id, status, user);
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename=campaign_report_${id}_${Date.now()}.csv`);
     return res.send(csvData);

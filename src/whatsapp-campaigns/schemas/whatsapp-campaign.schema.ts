@@ -87,12 +87,20 @@ export class WhatsappCampaign {
   @Prop({ type: Date })
   pausedAt?: Date;
 
-  @Prop({ type: Types.ObjectId, ref: 'User' })
+  @Prop({ type: Types.ObjectId, ref: 'User', index: true })
   createdBy: Types.ObjectId;
+
+  @Prop({ type: Types.ObjectId, ref: 'User', index: true })
+  ownerId?: Types.ObjectId; // Campaign owner
 
   @Prop({ trim: true })
   createdByName?: string;
+
+  @Prop({ trim: true, default: 'sales' })
+  createdByRole?: string;
 }
 
 export const WhatsappCampaignSchema = SchemaFactory.createForClass(WhatsappCampaign);
 WhatsappCampaignSchema.index({ status: 1, createdAt: -1 });
+WhatsappCampaignSchema.index({ createdBy: 1, createdAt: -1 });
+WhatsappCampaignSchema.index({ ownerId: 1, createdAt: -1 });
