@@ -61,7 +61,7 @@ export class WhatsappCampaignsService {
   // ==========================================
   private async validateCampaignAccess(
     id: string,
-    user: any,
+    user?: any,
     action = 'view',
   ): Promise<{ campaign: WhatsappCampaignDocument; scope: any }> {
     if (!id || !Types.ObjectId.isValid(id)) {
@@ -648,7 +648,7 @@ export class WhatsappCampaignsService {
     };
   }
 
-  async findOneCampaign(id: string, user: any) {
+  async findOneCampaign(id: string, user?: any) {
     await this.validateCampaignAccess(id, user, 'view');
     const campaign = await this.campaignModel
       .findById(id)
@@ -659,7 +659,7 @@ export class WhatsappCampaignsService {
     return campaign;
   }
 
-  async deleteCampaign(id: string, user: any) {
+  async deleteCampaign(id: string, user?: any) {
     const { campaign, scope } = await this.validateCampaignAccess(id, user, 'delete');
 
     this.queueService.signalCampaignStop(id);
@@ -680,7 +680,7 @@ export class WhatsappCampaignsService {
   // ==========================================
   // 4. CAMPAIGN CONTROLS (PAUSE / RESUME / STOP)
   // ==========================================
-  async pauseCampaign(id: string, user: any) {
+  async pauseCampaign(id: string, user?: any) {
     const { campaign, scope } = await this.validateCampaignAccess(id, user, 'pause');
 
     if (campaign.status === CampaignStatus.COMPLETED) {
@@ -718,7 +718,7 @@ export class WhatsappCampaignsService {
     return { success: true, message: 'Campaign paused successfully', campaign };
   }
 
-  async resumeCampaign(id: string, user: any) {
+  async resumeCampaign(id: string, user?: any) {
     const { campaign, scope } = await this.validateCampaignAccess(id, user, 'resume');
 
     if (campaign.status === CampaignStatus.COMPLETED) {
@@ -750,7 +750,7 @@ export class WhatsappCampaignsService {
     return { success: true, message: 'Campaign resumed successfully', campaign };
   }
 
-  async stopCampaign(id: string, user: any) {
+  async stopCampaign(id: string, user?: any) {
     const { campaign, scope } = await this.validateCampaignAccess(id, user, 'stop');
 
     if (campaign.status === CampaignStatus.COMPLETED || campaign.status === CampaignStatus.STOPPED) {
@@ -788,7 +788,7 @@ export class WhatsappCampaignsService {
   // ==========================================
   // 5. LIVE PROGRESS
   // ==========================================
-  async getLiveProgress(id: string, user: any) {
+  async getLiveProgress(id: string, user?: any) {
     const { campaign } = await this.validateCampaignAccess(id, user, 'view_progress');
 
     const total = campaign.totalRecipients || 0;
