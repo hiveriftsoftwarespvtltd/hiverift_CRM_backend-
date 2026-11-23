@@ -9,6 +9,7 @@ import {
   TemplateCategory,
 } from '../schemas/whatsapp-template.schema';
 import { CreateTemplateDto, UpdateTemplateDto } from '../dto/template.dto';
+import { OFFICIAL_HIVERIFT_TEMPLATES } from '../official-templates.data';
 
 @Injectable()
 export class WhatsappTemplatesService implements OnModuleInit {
@@ -21,7 +22,7 @@ export class WhatsappTemplatesService implements OnModuleInit {
   ) {}
 
   async onModuleInit() {
-    await this.seedDefaultTemplates();
+    await this.resetToOfficialTemplates(true);
     try {
       this.logger.log('Syncing official Meta Cloud API approved templates on startup...');
       await this.syncMetaTemplates();
@@ -30,64 +31,41 @@ export class WhatsappTemplatesService implements OnModuleInit {
     }
   }
 
-  private async seedDefaultTemplates() {
+  /**
+   * Resets and populates the database with the 20 official Meta-approved HiveRift WhatsApp templates.
+   */
+  async resetToOfficialTemplates(cleanOld = true) {
     try {
-      const count = await this.templateModel.countDocuments();
-      if (count === 0) {
-        this.logger.log('Seeding default approved WhatsApp templates...');
-        const defaults = [
-          {
-            name: 'lead_followup_v1',
-            displayName: 'Lead Follow-up & Greeting',
-            category: TemplateCategory.UTILITY,
-            language: 'en',
-            headerType: 'NONE',
-            body: 'Hello {{1}},\n\nThank you for reaching out to us at HiveRift. We are following up regarding {{2}}.\n\nPlease let us know if you have any questions or when would be a good time to connect.\n\nBest regards,\nHiveRift Team',
-            footer: 'HiveRift CRM • Reply STOP to unsubscribe',
-            variables: ['Name', 'Service / Requirement'],
-            buttons: [
-              { type: 'QUICK_REPLY', text: 'I am interested' },
-              { type: 'QUICK_REPLY', text: 'Call me later' },
-            ],
-            status: TemplateStatus.APPROVED,
-            isActive: true,
-          },
-          {
-            name: 'promotional_offer_v1',
-            displayName: 'Special Festival Offer',
-            category: TemplateCategory.MARKETING,
-            language: 'en',
-            headerType: 'TEXT',
-            headerText: 'Exclusive Business Offer',
-            body: 'Dear {{1}},\n\nUnlock high-impact digital solutions with HiveRift. We are pleased to offer {{2}} tailored for {{3}}.\n\nConnect with our solution experts today and elevate your operations.\n\nThank you!',
-            footer: 'HiveRift Solutions',
-            variables: ['Name', 'Offer Details', 'Company Name'],
-            buttons: [
-              { type: 'URL', text: 'View Offers', value: 'https://hiverift.com' },
-            ],
-            status: TemplateStatus.APPROVED,
-            isActive: true,
-          },
-          {
-            name: 'order_status_update',
-            displayName: 'Status & Milestone Update',
-            category: TemplateCategory.UTILITY,
-            language: 'en',
-            headerType: 'NONE',
-            body: 'Hi {{1}},\n\nThis is a quick update regarding your project with HiveRift. The latest milestone {{2}} has been successfully completed.\n\nYou can review progress in your client portal or reach out to your manager.\n\nBest regards,\nHiveRift Support',
-            footer: 'Powered by HiveRift Desk',
-            variables: ['Customer Name', 'Milestone Name'],
-            buttons: [],
-            status: TemplateStatus.APPROVED,
-            isActive: true,
-          },
-        ];
+      this.logger.log('Seeding official Meta-approved HiveRift WhatsApp templates library...');
 
-        await this.templateModel.insertMany(defaults);
-        this.logger.log('Default WhatsApp templates seeded successfully.');
+      if (cleanOld) {
+        // Remove old non-official templates to ensure clean official library
+        const officialNames = OFFICIAL_HIVERIFT_TEMPLATES.map((t) => t.name);
+        const delRes = await this.templateModel.deleteMany({ name: { $nin: officialNames } });
+        if (delRes.deletedCount > 0) {
+          this.logger.log(`Cleaned up ${delRes.deletedCount} old non-official templates.`);
+        }
       }
+
+      let count = 0;
+      for (const tpl of OFFICIAL_HIVERIFT_TEMPLATES) {
+        await this.templateModel.findOneAndUpdate(
+          { name: tpl.name },
+          { $set: tpl },
+          { upsert: true, new: true },
+        );
+        count++;
+      }
+
+      this.logger.log(`Successfully installed all ${count} official Meta-approved HiveRift templates.`);
+      return {
+        success: true,
+        message: `Successfully installed and synchronized all ${count} official Meta-approved HiveRift templates.`,
+        count,
+      };
     } catch (e: any) {
-      this.logger.error(`Error seeding templates: ${e.message}`);
+      this.logger.error(`Error loading official templates: ${e.message}`);
+      throw new BadRequestException(`Failed to install official templates: ${e.message}`);
     }
   }
 

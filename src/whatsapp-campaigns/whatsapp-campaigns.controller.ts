@@ -181,6 +181,12 @@ export class WhatsappCampaignsController {
     return { success: true, data };
   }
 
+  @Post('templates/reset-official')
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
+  async resetOfficialTemplates() {
+    return await this.templatesService.resetToOfficialTemplates(true);
+  }
+
   // ==========================================
   // CAMPAIGNS
   // ==========================================
