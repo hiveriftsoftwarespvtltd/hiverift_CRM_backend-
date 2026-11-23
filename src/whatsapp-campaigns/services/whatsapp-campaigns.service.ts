@@ -278,6 +278,14 @@ export class WhatsappCampaignsService {
     const campaign = await this.campaignModel.findById(id);
     if (!campaign) throw new NotFoundException('Campaign not found');
 
+    if (campaign.status === CampaignStatus.COMPLETED) {
+      return { success: true, message: 'Campaign is already completed', campaign };
+    }
+
+    if (campaign.status === CampaignStatus.PAUSED) {
+      return { success: true, message: 'Campaign is already paused', campaign };
+    }
+
     if (campaign.status !== CampaignStatus.RUNNING && campaign.status !== CampaignStatus.SCHEDULED) {
       throw new BadRequestException(`Cannot pause a campaign that is in '${campaign.status}' state`);
     }
@@ -287,12 +295,27 @@ export class WhatsappCampaignsService {
     await campaign.save();
 
     this.queueService.signalCampaignStop(id);
+
+    // Reset any in-flight processing recipient back to pending
+    await this.recipientModel.updateMany(
+      { campaignId: new Types.ObjectId(id), status: RecipientStatus.PROCESSING },
+      { $set: { status: RecipientStatus.PENDING } },
+    );
+
     return { success: true, message: 'Campaign paused successfully', campaign };
   }
 
   async resumeCampaign(id: string) {
     const campaign = await this.campaignModel.findById(id);
     if (!campaign) throw new NotFoundException('Campaign not found');
+
+    if (campaign.status === CampaignStatus.COMPLETED) {
+      return { success: true, message: 'Campaign is already completed', campaign };
+    }
+
+    if (campaign.status === CampaignStatus.RUNNING) {
+      return { success: true, message: 'Campaign is already running', campaign };
+    }
 
     if (campaign.status !== CampaignStatus.PAUSED) {
       throw new BadRequestException('Only paused campaigns can be resumed');
@@ -310,11 +333,27 @@ export class WhatsappCampaignsService {
     const campaign = await this.campaignModel.findById(id);
     if (!campaign) throw new NotFoundException('Campaign not found');
 
+    if (campaign.status === CampaignStatus.COMPLETED || campaign.status === CampaignStatus.STOPPED) {
+      return { success: true, message: `Campaign is already ${campaign.status}`, campaign };
+    }
+
     campaign.status = CampaignStatus.STOPPED;
     campaign.completedAt = new Date();
     await campaign.save();
 
     this.queueService.signalCampaignStop(id);
+
+    // Cancel remaining pending/processing recipients
+    await this.recipientModel.updateMany(
+      {
+        campaignId: new Types.ObjectId(id),
+        status: { $in: [RecipientStatus.PENDING, RecipientStatus.PROCESSING] },
+      },
+      {
+        $set: { status: RecipientStatus.SKIPPED, errorMessage: 'Campaign stopped by admin' },
+      },
+    );
+
     return { success: true, message: 'Campaign stopped successfully', campaign };
   }
 

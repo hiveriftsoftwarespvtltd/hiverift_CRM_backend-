@@ -45,6 +45,15 @@ export class WhatsappQueueService implements OnModuleInit, OnModuleDestroy {
    */
   async enqueueCampaign(campaignId: string) {
     this.logger.log(`Queueing WhatsApp Campaign: ${campaignId}`);
+    try {
+      // Reset any orphaned PROCESSING recipients back to PENDING so they are dispatched cleanly
+      await this.recipientModel.updateMany(
+        { campaignId: new Types.ObjectId(campaignId), status: RecipientStatus.PROCESSING },
+        { $set: { status: RecipientStatus.PENDING } },
+      );
+    } catch (e: any) {
+      this.logger.warn(`Could not reset processing recipients for ${campaignId}: ${e?.message}`);
+    }
     // Start processing in background without blocking caller
     setImmediate(() => this.processCampaign(campaignId));
   }
