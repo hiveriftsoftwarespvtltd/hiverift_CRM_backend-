@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { Module, forwardRef } from '@nestjs/common';
 import { MongooseModule } from '@nestjs/mongoose';
 import { MetaController } from './meta.controller';
 import { MetaService } from './meta.service';
@@ -7,6 +7,7 @@ import { Lead, LeadSchema } from '../leads/schemas/lead.schema';
 import { User, UserSchema } from '../users/schemas/user.schema';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { LeadsModule } from '../leads/leads.module';
+import { WhatsappCampaignsModule } from '../whatsapp-campaigns/whatsapp-campaigns.module';
 
 @Module({
   imports: [
@@ -16,6 +17,7 @@ import { LeadsModule } from '../leads/leads.module';
     ]),
     NotificationsModule,
     LeadsModule,
+    forwardRef(() => WhatsappCampaignsModule),
   ],
   controllers: [MetaController],
   providers: [MetaService, MetaWebhookService],

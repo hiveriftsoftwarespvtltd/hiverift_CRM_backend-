@@ -1,4 +1,4 @@
-import { Injectable, Logger, ForbiddenException, BadRequestException, Optional } from '@nestjs/common';
+import { Injectable, Logger, ForbiddenException, BadRequestException, Optional, Inject, forwardRef } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -9,6 +9,7 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { LeadRoundRobinService, RoundRobinAssignee } from '../leads/lead-round-robin.service';
 import { MetaService } from './meta.service';
 import { MetaWebhookPayload, MappedMetaLeadData, MetaLeadGraphResponse } from './interfaces/meta.interface';
+import { WhatsappInboxService } from '../whatsapp-campaigns/services/whatsapp-inbox.service';
 
 function sanitizePhone(phoneStr?: string): string {
   if (!phoneStr) return '';
@@ -33,6 +34,7 @@ export class MetaWebhookService {
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
     private readonly notificationsService: NotificationsService,
     @Optional() private readonly leadRoundRobinService?: LeadRoundRobinService,
+    @Optional() @Inject(forwardRef(() => WhatsappInboxService)) private readonly whatsappInboxService?: WhatsappInboxService,
   ) {}
 
   private async resolveAutoAssignee(): Promise<RoundRobinAssignee | null> {
@@ -233,6 +235,13 @@ export class MetaWebhookService {
                 { $set: { 'messages.$.status': statusName } },
               );
 
+              // Update WhatsApp Inbox Message status
+              if (this.whatsappInboxService) {
+                this.whatsappInboxService.handleStatusUpdate(st).catch((inboxErr) => {
+                  this.logger.warn(`Inbox status update sync warning: ${inboxErr?.message}`);
+                });
+              }
+
               // Also update WhatsApp Campaign Recipient status tracking
               try {
                 const recipientModel = this.leadModel.db.models['WhatsappCampaignRecipient'];
@@ -278,9 +287,19 @@ export class MetaWebhookService {
             const msg = messages[i];
             const contact = contacts.find((ct: any) => ct.wa_id === msg.from) || contacts[i] || contacts[0] || {};
 
-            this.processWhatsAppMessage(contact, msg).catch((err) => {
-              this.logger.error(`Error processing WhatsApp Lead message: ${err.message}`);
-            });
+            // 1. Process strictly in WhatsApp Inbox (matches CRM Lead -> Imported Lead -> Direct WhatsApp, never duplicates)
+            if (this.whatsappInboxService) {
+              this.whatsappInboxService.handleIncomingMessage(contact, msg, val).catch((err) => {
+                this.logger.error(`Error processing WhatsApp message in Inbox: ${err.message}`);
+              });
+            }
+
+            // 2. Only if explicit Click-to-WhatsApp Paid Ad (with ad referral source_id), create ad lead if not existing
+            if (msg?.referral?.source_id && !this.whatsappInboxService) {
+              this.processWhatsAppMessage(contact, msg).catch((err) => {
+                this.logger.error(`Error processing WhatsApp Ad message: ${err.message}`);
+              });
+            }
 
             processedCount++;
           }

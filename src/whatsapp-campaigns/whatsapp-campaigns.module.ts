@@ -24,6 +24,18 @@ import {
   WhatsappSetting,
   WhatsappSettingSchema,
 } from './schemas/whatsapp-setting.schema';
+import {
+  WhatsappConversation,
+  WhatsappConversationSchema,
+} from './schemas/whatsapp-conversation.schema';
+import {
+  WhatsappInboxMessage,
+  WhatsappInboxMessageSchema,
+} from './schemas/whatsapp-inbox-message.schema';
+import {
+  WhatsappWebhookEvent,
+  WhatsappWebhookEventSchema,
+} from './schemas/whatsapp-webhook-event.schema';
 
 import { Lead, LeadSchema } from '../leads/schemas/lead.schema';
 import { User, UserSchema } from '../users/schemas/user.schema';
@@ -33,11 +45,13 @@ import { NotificationsModule } from '../notifications/notifications.module';
 import { AuditModule } from '../audit/audit.module';
 
 import { WhatsappCampaignsController } from './whatsapp-campaigns.controller';
+import { WhatsappInboxController } from './whatsapp-inbox.controller';
 import { WhatsappLeadsService } from './services/whatsapp-leads.service';
 import { WhatsappTemplatesService } from './services/whatsapp-templates.service';
 import { WhatsappCampaignsService } from './services/whatsapp-campaigns.service';
 import { WhatsappQueueService } from './services/whatsapp-queue.service';
 import { WhatsappSettingsService } from './services/whatsapp-settings.service';
+import { WhatsappInboxService } from './services/whatsapp-inbox.service';
 
 @Module({
   imports: [
@@ -48,6 +62,9 @@ import { WhatsappSettingsService } from './services/whatsapp-settings.service';
       { name: WhatsappCampaign.name, schema: WhatsappCampaignSchema },
       { name: WhatsappCampaignRecipient.name, schema: WhatsappCampaignRecipientSchema },
       { name: WhatsappSetting.name, schema: WhatsappSettingSchema },
+      { name: WhatsappConversation.name, schema: WhatsappConversationSchema },
+      { name: WhatsappInboxMessage.name, schema: WhatsappInboxMessageSchema },
+      { name: WhatsappWebhookEvent.name, schema: WhatsappWebhookEventSchema },
       { name: Lead.name, schema: LeadSchema },
       { name: User.name, schema: UserSchema },
     ]),
@@ -56,18 +73,20 @@ import { WhatsappSettingsService } from './services/whatsapp-settings.service';
     NotificationsModule,
     AuditModule,
   ],
-  controllers: [WhatsappCampaignsController],
+  controllers: [WhatsappCampaignsController, WhatsappInboxController],
   providers: [
     WhatsappLeadsService,
     WhatsappTemplatesService,
     WhatsappCampaignsService,
     WhatsappQueueService,
     WhatsappSettingsService,
+    WhatsappInboxService,
   ],
   exports: [
     WhatsappCampaignsService,
     WhatsappLeadsService,
     WhatsappTemplatesService,
+    WhatsappInboxService,
   ],
 })
 export class WhatsappCampaignsModule {}

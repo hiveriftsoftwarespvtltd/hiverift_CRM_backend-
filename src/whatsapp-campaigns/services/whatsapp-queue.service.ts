@@ -12,6 +12,7 @@ import {
   RecipientStatus,
 } from '../schemas/whatsapp-campaign-recipient.schema';
 import { MetaService } from '../../meta/meta.service';
+import { WhatsappInboxService } from './whatsapp-inbox.service';
 
 @Injectable()
 export class WhatsappQueueService implements OnModuleInit, OnModuleDestroy {
@@ -26,6 +27,7 @@ export class WhatsappQueueService implements OnModuleInit, OnModuleDestroy {
     @InjectModel(WhatsappCampaignRecipient.name)
     private readonly recipientModel: Model<WhatsappCampaignRecipientDocument>,
     private readonly metaService: MetaService,
+    private readonly whatsappInboxService: WhatsappInboxService,
   ) {}
 
   onModuleInit() {
@@ -235,6 +237,21 @@ export class WhatsappQueueService implements OnModuleInit, OnModuleDestroy {
         // Update campaign counters atomically
         await this.campaignModel.findByIdAndUpdate(campaign._id, {
           $inc: { sentCount: 1, pendingCount: -1 },
+        });
+
+        // Record outgoing campaign message in WhatsApp Inbox thread
+        await this.whatsappInboxService.recordCampaignMessage({
+          recipientPhone: recipient.phoneNumber,
+          recipientName: recipient.name,
+          whatsappMessageId: result.whatsappMessageId,
+          renderedMessage: recipient.renderedMessage || renderedText,
+          campaignId: campaign._id,
+          campaignName: campaign.name,
+          templateName,
+          templateParameters: params,
+          sentBy: campaign.createdBy,
+          crmLeadId: recipient.crmLeadId || (recipient.recipientSource === 'crm_lead' ? recipient.sourceLeadId : undefined),
+          importedLeadId: recipient.importedLeadId || (recipient.recipientSource === 'imported_lead' ? recipient.sourceLeadId : undefined),
         });
       } else {
         // Check retry
