@@ -54,7 +54,7 @@ export class WhatsappCampaignsService {
     private readonly userModel: Model<UserDocument>,
     private readonly queueService: WhatsappQueueService,
     private readonly auditService: AuditService,
-  ) {}
+  ) { }
 
   // ==========================================
   // HELPER: VALIDATE CAMPAIGN ACCESS
@@ -299,8 +299,28 @@ export class WhatsappCampaignsService {
       throw new NotFoundException('Selected WhatsApp template not found');
     }
 
-    const count = await this.campaignModel.countDocuments();
-    const campaignId = `CMP-${new Date().toISOString().slice(0, 7).replace('-', '')}-${String(count + 1).padStart(4, '0')}`;
+    // Bulletproof unique campaign ID generation (safe against deleted campaigns & concurrent inserts)
+    const monthPrefix = `CMP-${new Date().toISOString().slice(0, 7).replace('-', '')}-`;
+    const lastCampaign = await this.campaignModel
+      .findOne({ campaignId: { $regex: `^${monthPrefix}` } })
+      .sort({ campaignId: -1 })
+      .select('campaignId')
+      .lean();
+
+    let nextSeq = 1;
+    if (lastCampaign?.campaignId) {
+      const parts = lastCampaign.campaignId.split('-');
+      const lastNum = parseInt(parts[parts.length - 1], 10);
+      if (!isNaN(lastNum)) {
+        nextSeq = lastNum + 1;
+      }
+    }
+
+    let campaignId = `${monthPrefix}${String(nextSeq).padStart(4, '0')}`;
+    while (await this.campaignModel.exists({ campaignId })) {
+      nextSeq++;
+      campaignId = `${monthPrefix}${String(nextSeq).padStart(4, '0')}`;
+    }
 
     const delaySeconds = Math.max(1, dto.delaySeconds || 10);
     const isNow = !dto.scheduleType || dto.scheduleType === 'now';
@@ -861,6 +881,7 @@ export class WhatsappCampaignsService {
 
   async exportReportCsv(campaignId: string, status?: string, user?: any) {
     await this.validateCampaignAccess(campaignId, user, 'export_report');
+
 
     const filter: any = { campaignId: new Types.ObjectId(campaignId) };
     if (status && status !== 'all') {
