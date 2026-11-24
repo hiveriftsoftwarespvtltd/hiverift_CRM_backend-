@@ -5,6 +5,8 @@ import {
   ForbiddenException,
   BadRequestException,
   Optional,
+  Inject,
+  forwardRef,
 } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
@@ -63,6 +65,7 @@ export class WhatsappInboxService {
     private readonly importedLeadModel: Model<WhatsappImportedLeadDocument>,
     @InjectModel(User.name)
     private readonly userModel: Model<UserDocument>,
+    @Inject(forwardRef(() => MetaService))
     private readonly metaService: MetaService,
   ) {}
 

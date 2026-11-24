@@ -69,7 +69,7 @@ import { WhatsappInboxService } from './services/whatsapp-inbox.service';
       { name: User.name, schema: UserSchema },
     ]),
     forwardRef(() => LeadsModule),
-    MetaModule,
+    forwardRef(() => MetaModule),
     NotificationsModule,
     AuditModule,
   ],
