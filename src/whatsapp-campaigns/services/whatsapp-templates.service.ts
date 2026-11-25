@@ -72,7 +72,7 @@ export class WhatsappTemplatesService implements OnModuleInit {
   async findAll(query?: any) {
     const filter: any = {};
     if (query?.status && query.status !== 'all') {
-      filter.status = query.status;
+      filter.status = { $regex: new RegExp(`^${query.status}$`, 'i') };
     }
     if (query?.category && query.category !== 'all') {
       filter.category = query.category;
