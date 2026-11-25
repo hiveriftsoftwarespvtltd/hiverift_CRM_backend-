@@ -27,6 +27,10 @@ import {
   WhatsappWebhookEvent,
   WhatsappWebhookEventDocument,
 } from '../schemas/whatsapp-webhook-event.schema';
+import {
+  WhatsappTemplate,
+  WhatsappTemplateDocument,
+} from '../schemas/whatsapp-template.schema';
 import { Lead, LeadDocument } from '../../leads/schemas/lead.schema';
 import {
   WhatsappImportedLead,
@@ -65,6 +69,8 @@ export class WhatsappInboxService {
     private readonly importedLeadModel: Model<WhatsappImportedLeadDocument>,
     @InjectModel(User.name)
     private readonly userModel: Model<UserDocument>,
+    @InjectModel(WhatsappTemplate.name)
+    private readonly templateModel: Model<WhatsappTemplateDocument>,
     @Inject(forwardRef(() => MetaService))
     private readonly metaService: MetaService,
   ) {}
@@ -720,13 +726,43 @@ export class WhatsappInboxService {
     // A. Sending an Approved Template
     if (dto.templateName) {
       msgType = InboxMessageType.TEMPLATE;
+
+      // Look up template in DB to verify parameters and language
+      const template = await this.templateModel.findOne({ name: dto.templateName }).lean();
+      const language = template?.language || 'en';
+
+      let paramsToSend: string[] = dto.parameters || [];
+
+      if (template) {
+        const bodyText = template.body || (template as any).bodyText || '';
+        const matches = bodyText.match(/\{\{(\d+)\}\}/g) || [];
+        const expectedCount = new Set(matches).size;
+
+        if (expectedCount === 0) {
+          paramsToSend = [];
+        } else {
+          const normalized: string[] = [];
+          for (let i = 0; i < expectedCount; i++) {
+            const val = paramsToSend[i] !== undefined && paramsToSend[i] !== null ? String(paramsToSend[i]).trim() : '';
+            if (val) {
+              normalized.push(val);
+            } else if (i === 0) {
+              normalized.push(conversation.contactName || 'Customer');
+            } else {
+              normalized.push('-');
+            }
+          }
+          paramsToSend = normalized;
+        }
+      }
+
       finalContent = dto.renderedMessage || `[WhatsApp Template: ${dto.templateName}]`;
 
       sendResult = await this.metaService.sendWhatsAppTemplateMessage(
         phone,
         dto.templateName,
-        dto.parameters || [],
-        'en',
+        paramsToSend,
+        language,
       );
     }
     // B. Sending Media (within 24-hr window)
