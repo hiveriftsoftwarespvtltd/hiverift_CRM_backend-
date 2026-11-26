@@ -514,4 +514,117 @@ Would you be interested in a complimentary digital presence assessment for {{2}}
     status: TemplateStatus.APPROVED,
     isActive: true,
   },
+
+  // 21. CA Firms Website Outreach
+  {
+    name: 'hiverift_ca_firms',
+    displayName: 'HiveRift CA Firms Website Outreach',
+    category: TemplateCategory.MARKETING,
+    language: 'en',
+    headerType: 'NONE',
+    body: `📊 CA FIRMS – TAKE YOUR PRACTICE ONLINE WITH HIVERIFT!
+
+Are you a Chartered Accountant or running a CA Firm? Give your practice a professional digital identity and attract more clients online! 🚀
+
+🌐 Get a Professional Website for Your CA Firm!
+
+At HiveRift Softwares Pvt. Ltd., we help CA firms establish a strong online presence with:
+
+✅ Professional CA Firm Website
+✅ GST & Taxation Service Pages
+✅ Income Tax & Audit Service Information
+✅ Company Registration & Compliance Pages
+✅ Client Enquiry & Lead Generation Forms
+✅ WhatsApp Integration
+✅ Google Business Profile & SEO
+✅ Mobile-Friendly Website Design
+
+💼 Build Trust. Get More Enquiries. Grow Your CA Practice.
+
+Your clients are searching online. Make sure they find your firm!
+
+🔥 Give your CA Firm the professional online presence it deserves.
+
+📲 Interested? Reply “CA WEBSITE” for a free consultation.
+
+🌐 https://hiverift.com
+
+HiveRift – Your Digital Growth Partner.`,
+    variables: [],
+    buttons: [],
+    status: TemplateStatus.DRAFT,
+    isActive: false,
+  },
+
+  // 22. Outreach 1
+  {
+    name: 'hiverift_outreach_1',
+    displayName: 'HiveRift Outreach 1',
+    category: TemplateCategory.MARKETING,
+    language: 'en',
+    headerType: 'NONE',
+    body: `Hi {{1}},
+
+Greetings from HiveRift Softwares!
+
+Are you looking to improve your business’s online presence?
+
+We help businesses with:
+● Professional Website Development
+● Social Media Marketing
+● SEO & Google Visibility
+● Ecommerce Development
+● Custom CRM & ERP Solutions
+
+Would you like to discuss your business requirements?
+Reply YES to connect with our team.
+
+Website: https://hiverift.com
+
+Regards,
+Team HiveRift`,
+    footer: 'HiveRift Softwares Pvt Ltd',
+    variables: ['Contact Name'],
+    buttons: [
+      { type: 'QUICK_REPLY', text: 'Yes' },
+      { type: 'URL', text: 'Visit website', value: 'https://hiverift.com/' },
+    ],
+    status: TemplateStatus.DRAFT,
+    isActive: false,
+  },
+
+  // 23. Outreach 2
+  {
+    name: 'hiverift_outreach_2',
+    displayName: 'HiveRift Outreach 2',
+    category: TemplateCategory.MARKETING,
+    language: 'en',
+    headerType: 'NONE',
+    body: `Hi {{1}},
+
+Every growing business needs a strong digital presence.
+
+HiveRift Softwares Pvt Ltd helps businesses build and grow through our services:
+● Professional Website Development
+● Social Media Management
+● SEO & Google Ads
+● Ecommerce Development
+● Custom CRM & ERP Software
+
+Our team can help you identify the right digital solutions for your business.
+Would you be interested in a complimentary initial consultation?
+
+Website: https://hiverift.com
+
+Regards,
+Team HiveRift`,
+    footer: 'HiveRift Softwares Pvt Ltd',
+    variables: ['Contact Name'],
+    buttons: [
+      { type: 'QUICK_REPLY', text: 'Yes' },
+      { type: 'URL', text: 'Explore HiveRift', value: 'https://hiverift.com/' },
+    ],
+    status: TemplateStatus.DRAFT,
+    isActive: false,
+  },
 ];
