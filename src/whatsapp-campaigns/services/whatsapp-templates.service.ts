@@ -8,6 +8,7 @@ import {
   TemplateStatus,
   TemplateCategory,
 } from '../schemas/whatsapp-template.schema';
+import { WhatsappSetting, WhatsappSettingDocument } from '../schemas/whatsapp-setting.schema';
 import { CreateTemplateDto, UpdateTemplateDto } from '../dto/template.dto';
 import { OFFICIAL_HIVERIFT_TEMPLATES } from '../official-templates.data';
 
@@ -18,11 +19,12 @@ export class WhatsappTemplatesService implements OnModuleInit {
   constructor(
     @InjectModel(WhatsappTemplate.name)
     private readonly templateModel: Model<WhatsappTemplateDocument>,
+    @InjectModel(WhatsappSetting.name)
+    private readonly settingModel: Model<WhatsappSettingDocument>,
     private readonly configService: ConfigService,
-  ) {}
+  ) { }
 
   async onModuleInit() {
-    await this.resetToOfficialTemplates(true);
     try {
       this.logger.log('Syncing official Meta Cloud API approved templates on startup...');
       await this.syncMetaTemplates();
@@ -32,36 +34,51 @@ export class WhatsappTemplatesService implements OnModuleInit {
   }
 
   /**
-   * Resets and populates the database with the 20 official Meta-approved HiveRift WhatsApp templates.
+   * Installs the 20 reference HiveRift templates as DRAFT, then syncs with Meta WABA
+   * so only genuinely Meta-approved templates remain APPROVED & selectable.
    */
-  async resetToOfficialTemplates(cleanOld = true) {
+  async resetToOfficialTemplates(cleanOld = false) {
     try {
-      this.logger.log('Seeding official Meta-approved HiveRift WhatsApp templates library...');
+      this.logger.log('Installing reference HiveRift templates library...');
 
       if (cleanOld) {
-        // Remove old non-official templates to ensure clean official library
         const officialNames = OFFICIAL_HIVERIFT_TEMPLATES.map((t) => t.name);
-        const delRes = await this.templateModel.deleteMany({ name: { $nin: officialNames } });
+        const delRes = await this.templateModel.deleteMany({
+          name: { $nin: officialNames },
+          metaTemplateId: { $exists: false },
+        });
         if (delRes.deletedCount > 0) {
-          this.logger.log(`Cleaned up ${delRes.deletedCount} old non-official templates.`);
+          this.logger.log(`Cleaned up ${delRes.deletedCount} unverified draft templates.`);
         }
       }
 
       let count = 0;
       for (const tpl of OFFICIAL_HIVERIFT_TEMPLATES) {
+        const existing = await this.templateModel.findOne({ name: tpl.name }).lean();
+        if (existing?.metaTemplateId) {
+          count++;
+          continue;
+        }
         await this.templateModel.findOneAndUpdate(
           { name: tpl.name },
-          { $set: tpl },
+          {
+            $set: {
+              ...tpl,
+              status: TemplateStatus.DRAFT,
+              isActive: false,
+            },
+          },
           { upsert: true, new: true },
         );
         count++;
       }
 
-      this.logger.log(`Successfully installed all ${count} official Meta-approved HiveRift templates.`);
+      const syncRes = await this.syncMetaTemplates();
       return {
         success: true,
-        message: `Successfully installed and synchronized all ${count} official Meta-approved HiveRift templates.`,
+        message: `Installed ${count} reference templates and synced ${syncRes.syncedCount || 0} live Meta-approved templates.`,
         count,
+        syncedCount: syncRes.syncedCount || 0,
       };
     } catch (e: any) {
       this.logger.error(`Error loading official templates: ${e.message}`);
@@ -77,6 +94,10 @@ export class WhatsappTemplatesService implements OnModuleInit {
     if (query?.category && query.category !== 'all') {
       filter.category = query.category;
     }
+    if (query?.metaVerifiedOnly === 'true' || query?.metaVerifiedOnly === true) {
+      filter.metaTemplateId = { $exists: true, $nin: [null, ''] };
+      filter.isActive = true;
+    }
     if (query?.search) {
       filter.$or = [
         { name: { $regex: query.search, $options: 'i' } },
@@ -84,7 +105,7 @@ export class WhatsappTemplatesService implements OnModuleInit {
         { body: { $regex: query.search, $options: 'i' } },
       ];
     }
-    return await this.templateModel.find(filter).sort({ createdAt: -1 }).lean();
+    return await this.templateModel.find(filter).sort({ metaTemplateId: -1, createdAt: -1 }).lean();
   }
 
   async findOne(id: string) {
@@ -94,7 +115,8 @@ export class WhatsappTemplatesService implements OnModuleInit {
   }
 
   async create(dto: CreateTemplateDto, userId?: string) {
-    const existing = await this.templateModel.findOne({ name: dto.name.trim().toLowerCase() });
+    const normalizedName = dto.name.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_');
+    const existing = await this.templateModel.findOne({ name: normalizedName });
     if (existing) {
       throw new BadRequestException(`Template with name '${dto.name}' already exists.`);
     }
@@ -105,8 +127,11 @@ export class WhatsappTemplatesService implements OnModuleInit {
 
     const template = new this.templateModel({
       ...dto,
-      name: dto.name.trim().toLowerCase().replace(/[^a-z0-9_]/g, '_'),
+      name: normalizedName,
       variables: dto.variables && dto.variables.length > 0 ? dto.variables : extractedVars,
+      // Local custom templates remain DRAFT until approved in Meta Business Manager and synced
+      status: TemplateStatus.DRAFT,
+      isActive: false,
       createdBy: userId ? new Types.ObjectId(userId) : undefined,
     });
 
@@ -126,9 +151,10 @@ export class WhatsappTemplatesService implements OnModuleInit {
   }
 
   async syncMetaTemplates() {
-    const pageAccessToken = this.configService.get<string>('META_PAGE_ACCESS_TOKEN');
-    const wabaId = this.configService.get<string>('META_WABA_ID') || '1850522739692580';
-    const apiVersion = this.configService.get<string>('META_GRAPH_API_VERSION') || 'v22.0';
+    const setting = await this.settingModel.findOne().lean();
+    const pageAccessToken = setting?.accessToken || this.configService.get<string>('META_PAGE_ACCESS_TOKEN');
+    const wabaId = setting?.wabaId || this.configService.get<string>('META_WABA_ID') || '1850522739692580';
+    const apiVersion = this.configService.get<string>('META_GRAPH_API_VERSION') || 'v20.0';
 
     if (!pageAccessToken || !wabaId) {
       return {
@@ -139,18 +165,28 @@ export class WhatsappTemplatesService implements OnModuleInit {
     }
 
     try {
-      const url = `https://graph.facebook.com/${apiVersion}/${wabaId}/message_templates?limit=100&access_token=${encodeURIComponent(pageAccessToken)}`;
-      const res = await fetch(url);
-      const data = await res.json();
+      const metaTemplates: any[] = [];
+      let nextUrl: string | null = `https://graph.facebook.com/${apiVersion}/${wabaId}/message_templates?limit=100&access_token=${encodeURIComponent(pageAccessToken)}`;
 
-      if (!res.ok) {
-        throw new Error(data?.error?.message || 'Failed to fetch templates from Meta');
+      while (nextUrl) {
+        const res = await fetch(nextUrl);
+        const data = await res.json();
+
+        if (!res.ok) {
+          throw new Error(data?.error?.message || 'Failed to fetch templates from Meta');
+        }
+
+        if (Array.isArray(data.data)) {
+          metaTemplates.push(...data.data);
+        }
+        nextUrl = data?.paging?.next || null;
       }
 
-      const metaTemplates: any[] = data.data || [];
+      const syncedNames: string[] = [];
       let syncedCount = 0;
 
       for (const mt of metaTemplates) {
+        syncedNames.push(mt.name);
         const bodyComp = mt.components?.find((c: any) => c.type === 'BODY') || {};
         const headerComp = mt.components?.find((c: any) => c.type === 'HEADER');
         const footerComp = mt.components?.find((c: any) => c.type === 'FOOTER');
@@ -175,7 +211,7 @@ export class WhatsappTemplatesService implements OnModuleInit {
           {
             $set: {
               name: mt.name,
-              displayName: mt.name.replace(/_/g, ' ').toUpperCase(),
+              displayName: mt.name.replace(/_/g, ' ').replace(/\b\w/g, (ch: string) => ch.toUpperCase()),
               category: mt.category || TemplateCategory.MARKETING,
               language: mt.language || 'en',
               headerType: headerComp ? (headerComp.format || 'TEXT') : 'NONE',
@@ -192,6 +228,17 @@ export class WhatsappTemplatesService implements OnModuleInit {
           { upsert: true, new: true },
         );
         syncedCount++;
+      }
+
+      // Demote any local templates not found in Meta WABA so they cannot be falsely shown as APPROVED
+      if (syncedNames.length > 0) {
+        await this.templateModel.updateMany(
+          { name: { $nin: syncedNames } },
+          {
+            $set: { status: TemplateStatus.DRAFT, isActive: false },
+            $unset: { metaTemplateId: 1 },
+          },
+        );
       }
 
       return {

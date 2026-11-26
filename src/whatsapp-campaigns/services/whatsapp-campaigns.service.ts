@@ -298,6 +298,11 @@ export class WhatsappCampaignsService {
     if (!template) {
       throw new NotFoundException('Selected WhatsApp template not found');
     }
+    if (template.status !== 'APPROVED' || !template.metaTemplateId) {
+      throw new BadRequestException(
+        `Template "${template.displayName || template.name}" is not verified/approved in your Meta WhatsApp Business Account. Please click "Sync with Meta" and select a Meta-approved template.`,
+      );
+    }
 
     // Bulletproof unique campaign ID generation (safe against deleted campaigns & concurrent inserts)
     const monthPrefix = `CMP-${new Date().toISOString().slice(0, 7).replace('-', '')}-`;

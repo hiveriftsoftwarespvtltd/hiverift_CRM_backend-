@@ -154,7 +154,8 @@ export class MetaService {
     templateName: string,
     parameters: string[] = [],
     languageCode = 'en',
-  ): Promise<{ success: boolean; whatsappMessageId?: string; error?: string }> {
+    extraComponents: any[] = [],
+  ): Promise<{ success: boolean; whatsappMessageId?: string; error?: string; errorCode?: number }> {
     const pageAccessToken = this.configService.get<string>('META_PAGE_ACCESS_TOKEN');
     const phoneNumberId = this.configService.get<string>('META_PHONE_NUMBER_ID') || '1320625991128154';
     const apiVersion = this.configService.get<string>('META_GRAPH_API_VERSION') || META_CONSTANTS.DEFAULT_GRAPH_API_VERSION;
@@ -173,10 +174,16 @@ export class MetaService {
 
     const url = `${META_CONSTANTS.GRAPH_API_BASE_URL}/${apiVersion}/${phoneNumberId}/messages`;
 
-    const bodyParameters = (parameters || []).map((param) => ({
-      type: 'text',
-      text: String(param !== undefined && param !== null ? param : ''),
-    }));
+    const bodyParameters = (parameters || []).map((param) => {
+      const cleaned = String(param !== undefined && param !== null ? param : '')
+        .replace(/[\r\n\t]+/g, ' ')
+        .replace(/ {2,}/g, ' ')
+        .trim();
+      return {
+        type: 'text',
+        text: cleaned || 'Customer',
+      };
+    });
 
     const payload: any = {
       messaging_product: 'whatsapp',
@@ -191,13 +198,18 @@ export class MetaService {
       },
     };
 
+    const components: any[] = [];
     if (bodyParameters.length > 0) {
-      payload.template.components = [
-        {
-          type: 'body',
-          parameters: bodyParameters,
-        },
-      ];
+      components.push({
+        type: 'body',
+        parameters: bodyParameters,
+      });
+    }
+    if (Array.isArray(extraComponents) && extraComponents.length > 0) {
+      components.push(...extraComponents);
+    }
+    if (components.length > 0) {
+      payload.template.components = components;
     }
 
     try {
@@ -216,7 +228,8 @@ export class MetaService {
 
       if (!response.ok) {
         let errorMsg = responseData?.error?.message || `HTTP ${response.status} ${response.statusText}`;
-        const errorCode = responseData?.error?.code;
+        let finalErrorCode: number | undefined = responseData?.error?.code;
+        const errorCode = finalErrorCode;
 
         // If parameter count mismatch error (e.g. template expected 0 parameters, like hello_world), retry without parameters
         if (errorCode === 132000 && payload.template?.components?.length > 0) {
@@ -259,6 +272,7 @@ export class MetaService {
               }
             }
             errorMsg = retryData?.error?.message || errorMsg;
+            finalErrorCode = retryData?.error?.code || finalErrorCode;
           } catch (retryErr: any) {
             this.logger.warn(`0-param retry failed: ${retryErr?.message || retryErr}`);
           }
@@ -285,13 +299,14 @@ export class MetaService {
               return { success: true, whatsappMessageId: retryWamid };
             }
             errorMsg = retryData?.error?.message || errorMsg;
+            finalErrorCode = retryData?.error?.code || finalErrorCode;
           } catch (retryErr: any) {
             this.logger.warn(`Fallback retry failed: ${retryErr?.message || retryErr}`);
           }
         }
 
         this.logger.error(`WhatsApp Template API Error for ${cleanPhone} [${templateName}]: ${errorMsg}`);
-        return { success: false, error: errorMsg };
+        return { success: false, error: errorMsg, errorCode: finalErrorCode };
       }
 
       const wamid = responseData?.messages?.[0]?.id || `wamid.template.${Date.now()}`;

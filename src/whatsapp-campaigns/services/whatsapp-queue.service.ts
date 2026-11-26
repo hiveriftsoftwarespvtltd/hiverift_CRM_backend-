@@ -199,8 +199,27 @@ export class WhatsappQueueService implements OnModuleInit, OnModuleDestroy {
           else if (field === 'phoneNumber') val = recipient.phoneNumber || '';
           else if (field) val = (recipient as any)[field] || '';
           else val = recipient.name || 'Customer';
-          params.push(String(val || 'Customer'));
+          const sanitizedVal = String(val || '')
+            .replace(/[\r\n\t]+/g, ' ')
+            .replace(/ {2,}/g, ' ')
+            .trim();
+          params.push(sanitizedVal || 'Customer');
         }
+      }
+
+      // Build dynamic URL button components if template has {{1}} in button URL
+      const extraComponents: any[] = [];
+      if (Array.isArray(template?.buttons)) {
+        template.buttons.forEach((btn: any, idx: number) => {
+          if (btn?.type === 'URL' && typeof btn?.value === 'string' && /\{\{\d+\}\}/.test(btn.value)) {
+            extraComponents.push({
+              type: 'button',
+              sub_type: 'url',
+              index: String(idx),
+              parameters: [{ type: 'text', text: 'services' }],
+            });
+          }
+        });
       }
 
       // If template snapshot exists, render text preview for storage
@@ -211,7 +230,10 @@ export class WhatsappQueueService implements OnModuleInit, OnModuleDestroy {
       recipient.renderedMessage = renderedText;
 
       // Send via Meta WhatsApp Cloud API
-      const templateName = template?.name || 'lead_followup_v1';
+      const templateName = template?.name;
+      if (!templateName) {
+        throw new Error('Campaign template snapshot is missing template name');
+      }
       const lang = template?.language || 'en';
 
       this.logger.log(
@@ -223,6 +245,7 @@ export class WhatsappQueueService implements OnModuleInit, OnModuleDestroy {
         templateName,
         params,
         lang,
+        extraComponents,
       );
 
       if (result.success && result.whatsappMessageId) {
@@ -254,11 +277,21 @@ export class WhatsappQueueService implements OnModuleInit, OnModuleDestroy {
           importedLeadId: recipient.importedLeadId || (recipient.recipientSource === 'imported_lead' ? recipient.sourceLeadId : undefined),
         });
       } else {
-        // Check retry
-        recipient.retryCount = (recipient.retryCount || 0) + 1;
-        recipient.errorMessage = result.error || 'Failed to dispatch WhatsApp message';
+        const nonRetryableCodes = [132001, 132000, 190];
+        const isPermanentFailure =
+          (result.errorCode && nonRetryableCodes.includes(result.errorCode)) ||
+          (result.error && result.error.includes('does not exist in the translation'));
 
-        if (recipient.retryCount < recipient.maxRetries) {
+        // Check retry
+        recipient.retryCount = isPermanentFailure
+          ? (recipient.maxRetries || 2)
+          : (recipient.retryCount || 0) + 1;
+        recipient.errorMessage = result.error || 'Failed to dispatch WhatsApp message';
+        if (result.errorCode) {
+          recipient.errorCode = String(result.errorCode);
+        }
+
+        if (recipient.retryCount < (recipient.maxRetries || 2)) {
           // Re-queue for next attempt
           recipient.status = RecipientStatus.PENDING;
           await recipient.save();

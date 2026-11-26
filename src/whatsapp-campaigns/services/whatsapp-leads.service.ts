@@ -32,6 +32,12 @@ export function sanitizePhoneNumber(phoneStr?: any): string {
   if (digits.length === 12 && digits.startsWith('91')) {
     return digits.slice(2);
   }
+  if (digits.length === 13 && digits.startsWith('091')) {
+    return digits.slice(3);
+  }
+  if (digits.length === 14 && digits.startsWith('0091')) {
+    return digits.slice(4);
+  }
   if (digits.length === 11 && digits.startsWith('0')) {
     return digits.slice(1);
   }
@@ -102,7 +108,7 @@ export class WhatsappLeadsService {
     const filter = andConditions.length > 0 ? { $and: andConditions } : {};
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
-    const limitNum = Math.min(500, Math.max(1, parseInt(limit, 10) || 50));
+    const limitNum = Math.min(5000, Math.max(1, parseInt(limit, 10) || 50));
     const skip = (pageNum - 1) * limitNum;
 
     const [leads, total] = await Promise.all([
@@ -183,7 +189,7 @@ export class WhatsappLeadsService {
     const filter = andConditions.length > 0 ? { $and: andConditions } : {};
 
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
-    const limitNum = Math.min(500, Math.max(1, parseInt(limit, 10) || 50));
+    const limitNum = Math.min(5000, Math.max(1, parseInt(limit, 10) || 50));
     const skip = (pageNum - 1) * limitNum;
 
     const [leads, total] = await Promise.all([
