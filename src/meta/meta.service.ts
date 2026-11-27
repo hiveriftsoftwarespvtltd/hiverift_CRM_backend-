@@ -1,5 +1,7 @@
-import { Injectable, Logger, HttpException, HttpStatus } from '@nestjs/common';
+import { Injectable, Logger, HttpException, HttpStatus, Optional } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
+import { InjectConnection } from '@nestjs/mongoose';
+import { Connection } from 'mongoose';
 import * as fs from 'fs';
 import * as path from 'path';
 import { META_CONSTANTS } from './constants/meta.constants';
@@ -9,7 +11,54 @@ import { MetaLeadGraphResponse } from './interfaces/meta.interface';
 export class MetaService {
   private readonly logger = new Logger(MetaService.name);
 
-  constructor(private readonly configService: ConfigService) {}
+  constructor(
+    private readonly configService: ConfigService,
+    @Optional() @InjectConnection() private readonly connection?: Connection,
+  ) {}
+
+  /**
+   * Resolves WhatsApp Cloud API credentials from MongoDB `whatsapp_settings` first,
+   * falling back to server environment variables so tokens saved via Settings UI or `.env` both work.
+   */
+  private async resolveWhatsAppConfig(): Promise<{
+    accessToken: string;
+    phoneNumberId: string;
+    apiVersion: string;
+  }> {
+    let dbSetting: any = null;
+    try {
+      if (this.connection?.db) {
+        dbSetting = await this.connection.db.collection('whatsapp_settings').findOne({});
+      }
+    } catch {
+      // Ignore DB lookup errors and fall back to env
+    }
+
+    const dbToken =
+      dbSetting?.accessToken && !String(dbSetting.accessToken).includes('...')
+        ? String(dbSetting.accessToken).trim()
+        : '';
+
+    const accessToken =
+      dbToken ||
+      this.configService.get<string>('META_PAGE_ACCESS_TOKEN') ||
+      this.configService.get<string>('META_WHATSAPP_ACCESS_TOKEN') ||
+      this.configService.get<string>('META_ACCESS_TOKEN') ||
+      this.configService.get<string>('META_SYSTEM_USER_TOKEN') ||
+      '';
+
+    const phoneNumberId =
+      (dbSetting?.phoneNumberId ? String(dbSetting.phoneNumberId).trim() : '') ||
+      this.configService.get<string>('META_PHONE_NUMBER_ID') ||
+      '1320625991128154';
+
+    const apiVersion =
+      (dbSetting?.apiVersion ? String(dbSetting.apiVersion).trim() : '') ||
+      this.configService.get<string>('META_GRAPH_API_VERSION') ||
+      META_CONSTANTS.DEFAULT_GRAPH_API_VERSION;
+
+    return { accessToken, phoneNumberId, apiVersion };
+  }
 
 
   /**
@@ -133,13 +182,11 @@ export class MetaService {
    * POST /{version}/{phone_number_id}/messages
    */
   async sendWhatsAppTextMessage(phone: string, text: string): Promise<{ success: boolean; whatsappMessageId?: string; error?: string }> {
-    const pageAccessToken = this.configService.get<string>('META_PAGE_ACCESS_TOKEN');
-    const phoneNumberId = this.configService.get<string>('META_PHONE_NUMBER_ID') || '1320674383284386';
-    const apiVersion = this.configService.get<string>('META_GRAPH_API_VERSION') || META_CONSTANTS.DEFAULT_GRAPH_API_VERSION;
+    const { accessToken: pageAccessToken, phoneNumberId, apiVersion } = await this.resolveWhatsAppConfig();
 
     if (!pageAccessToken) {
-      this.logger.error('META_PAGE_ACCESS_TOKEN is missing in environment variables');
-      return { success: false, error: 'META_PAGE_ACCESS_TOKEN is not configured on server' };
+      this.logger.error('META_PAGE_ACCESS_TOKEN is missing in both whatsapp_settings and environment variables');
+      return { success: false, error: 'META_PAGE_ACCESS_TOKEN is not configured on server (add in server .env or WhatsApp Settings)' };
     }
 
     // Format phone number (remove +, spaces, dashes, and ensure country code 91 for 10-digit numbers)
@@ -201,13 +248,11 @@ export class MetaService {
     languageCode = 'en',
     extraComponents: any[] = [],
   ): Promise<{ success: boolean; whatsappMessageId?: string; error?: string; errorCode?: number }> {
-    const pageAccessToken = this.configService.get<string>('META_PAGE_ACCESS_TOKEN');
-    const phoneNumberId = this.configService.get<string>('META_PHONE_NUMBER_ID') || '1320625991128154';
-    const apiVersion = this.configService.get<string>('META_GRAPH_API_VERSION') || META_CONSTANTS.DEFAULT_GRAPH_API_VERSION;
+    const { accessToken: pageAccessToken, phoneNumberId, apiVersion } = await this.resolveWhatsAppConfig();
 
     if (!pageAccessToken) {
-      this.logger.error('META_PAGE_ACCESS_TOKEN is missing in environment variables');
-      return { success: false, error: 'META_PAGE_ACCESS_TOKEN is not configured on server' };
+      this.logger.error('META_PAGE_ACCESS_TOKEN is missing in both whatsapp_settings and environment variables');
+      return { success: false, error: 'META_PAGE_ACCESS_TOKEN is not configured on server (add in server .env or WhatsApp Settings)' };
     }
 
     let cleanPhone = phone.replace(/\D/g, '');
@@ -368,9 +413,7 @@ export class MetaService {
    * POST /{version}/{phone_number_id}/media
    */
   async uploadWhatsAppMedia(fileBuffer: Buffer, mimeType = 'image/jpeg', filename = 'image.jpeg'): Promise<string | null> {
-    const pageAccessToken = this.configService.get<string>('META_PAGE_ACCESS_TOKEN');
-    const phoneNumberId = this.configService.get<string>('META_PHONE_NUMBER_ID') || '1320674383284386';
-    const apiVersion = this.configService.get<string>('META_GRAPH_API_VERSION') || META_CONSTANTS.DEFAULT_GRAPH_API_VERSION;
+    const { accessToken: pageAccessToken, phoneNumberId, apiVersion } = await this.resolveWhatsAppConfig();
 
     if (!pageAccessToken) {
       this.logger.error('META_PAGE_ACCESS_TOKEN is missing when uploading media');
@@ -430,13 +473,11 @@ export class MetaService {
     mediaType = 'image',
     fileName?: string,
   ): Promise<{ success: boolean; whatsappMessageId?: string; mediaId?: string; error?: string }> {
-    const pageAccessToken = this.configService.get<string>('META_PAGE_ACCESS_TOKEN');
-    const phoneNumberId = this.configService.get<string>('META_PHONE_NUMBER_ID') || '1320674383284386';
-    const apiVersion = this.configService.get<string>('META_GRAPH_API_VERSION') || META_CONSTANTS.DEFAULT_GRAPH_API_VERSION;
+    const { accessToken: pageAccessToken, phoneNumberId, apiVersion } = await this.resolveWhatsAppConfig();
 
     if (!pageAccessToken) {
-      this.logger.error('META_PAGE_ACCESS_TOKEN is missing in environment variables');
-      return { success: false, error: 'META_PAGE_ACCESS_TOKEN is not configured on server' };
+      this.logger.error('META_PAGE_ACCESS_TOKEN is missing in both whatsapp_settings and environment variables');
+      return { success: false, error: 'META_PAGE_ACCESS_TOKEN is not configured on server (add in server .env or WhatsApp Settings)' };
     }
 
     let cleanPhone = phone.replace(/\D/g, '');
@@ -589,8 +630,7 @@ export class MetaService {
       return null;
     }
 
-    const pageAccessToken = this.configService.get<string>('META_PAGE_ACCESS_TOKEN');
-    const apiVersion = this.configService.get<string>('META_GRAPH_API_VERSION') || META_CONSTANTS.DEFAULT_GRAPH_API_VERSION;
+    const { accessToken: pageAccessToken, apiVersion } = await this.resolveWhatsAppConfig();
 
     if (!pageAccessToken) {
       this.logger.warn('META_PAGE_ACCESS_TOKEN is missing when fetching media');
