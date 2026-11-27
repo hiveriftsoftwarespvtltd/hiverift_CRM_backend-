@@ -34,7 +34,7 @@ export class MetaService {
     }
 
     const fields =
-      'id,created_time,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id,form_name,platform,field_data';
+      'id,created_time,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id,platform,field_data';
 
     const fetchWithToken = async (
       tokenToUse: string,
