@@ -943,4 +943,209 @@ export class WhatsappInboxService {
 
     return { success: true };
   }
+
+  /**
+   * 10. INITIALIZE OR GET ACTIVE CONVERSATION FOR A CRM LEAD OR IMPORTED LEAD
+   * Seamlessly links conversation to lead, preserves single source of truth, and enriches window status.
+   */
+  async initConversation(
+    user: any,
+    dto: {
+      leadId?: string;
+      crmLeadId?: string;
+      importedLeadId?: string;
+      phone?: string;
+      name?: string;
+    },
+  ) {
+    const scope = getUserAccessScope(user);
+
+    let lead: any = null;
+    let importedLead: any = null;
+
+    // 1. Try finding CRM lead by MongoDB ObjectId or leadId (e.g. LEAD-1487)
+    if (dto.leadId && Types.ObjectId.isValid(dto.leadId)) {
+      lead = await this.leadModel.findById(dto.leadId);
+    }
+    if (!lead && (dto.crmLeadId || dto.leadId)) {
+      const searchKey = (dto.crmLeadId || dto.leadId || '').trim();
+      lead = await this.leadModel.findOne({
+        $or: [{ leadId: searchKey }, { phone: searchKey }, { whatsapp: searchKey }],
+      });
+    }
+
+    // 2. Try finding Imported Lead
+    if (dto.importedLeadId && Types.ObjectId.isValid(dto.importedLeadId)) {
+      importedLead = await this.importedLeadModel.findById(dto.importedLeadId);
+    }
+
+    // 3. If neither found yet, try phone lookup
+    const rawPhone = dto.phone || lead?.whatsapp || lead?.phone || importedLead?.phoneNumber || importedLead?.phone;
+    const cleanPhone = this.normalizePhoneNumber(rawPhone);
+
+    if (!lead && !importedLead && cleanPhone) {
+      const phoneRegex = new RegExp(cleanPhone);
+      lead = await this.leadModel.findOne({
+        $or: [{ phone: { $regex: phoneRegex } }, { whatsapp: { $regex: phoneRegex } }],
+      });
+      if (!lead) {
+        importedLead = await this.importedLeadModel.findOne({
+          $or: [
+            { phoneNumber: { $regex: phoneRegex } },
+            { phone: { $regex: phoneRegex } },
+            { whatsapp: { $regex: phoneRegex } },
+          ],
+        });
+      }
+    }
+
+    if (!cleanPhone || cleanPhone.length < 7) {
+      throw new BadRequestException('A valid phone number is required to start a WhatsApp conversation');
+    }
+
+    // Determine details & associations
+    let sourceType = ConversationSourceType.DIRECT_WHATSAPP;
+    let crmLeadId: Types.ObjectId | undefined = undefined;
+    let importedLeadId: Types.ObjectId | undefined = undefined;
+    let assignedEmployeeId: Types.ObjectId | undefined = undefined;
+    let ownerId: Types.ObjectId | undefined = undefined;
+    let contactName = dto.name || `WhatsApp Contact (${cleanPhone})`;
+
+    if (lead) {
+      sourceType = ConversationSourceType.CRM_LEAD;
+      crmLeadId = lead._id as Types.ObjectId;
+      contactName = lead.name || contactName;
+      assignedEmployeeId = lead.assignedTo || lead.createdBy || scope.userObjId;
+      ownerId = lead.assignedTo || lead.createdBy || scope.userObjId;
+    } else if (importedLead) {
+      sourceType = ConversationSourceType.IMPORTED_LEAD;
+      importedLeadId = importedLead._id as Types.ObjectId;
+      contactName = importedLead.name || contactName;
+      assignedEmployeeId = importedLead.assignedTo || importedLead.ownerId || importedLead.createdBy || scope.userObjId;
+      ownerId = importedLead.ownerId || importedLead.createdBy || scope.userObjId;
+    } else {
+      assignedEmployeeId = scope.userObjId;
+      ownerId = scope.userObjId;
+    }
+
+    // Find or create conversation in whatsapp_conversations collection
+    let conv = await this.conversationModel.findOne({ phoneNumber: cleanPhone });
+
+    if (conv) {
+      let updated = false;
+      if (!conv.crmLeadId && crmLeadId) {
+        conv.crmLeadId = crmLeadId;
+        conv.sourceType = ConversationSourceType.CRM_LEAD;
+        updated = true;
+      }
+      if (!conv.importedLeadId && importedLeadId) {
+        conv.importedLeadId = importedLeadId;
+        if (conv.sourceType === ConversationSourceType.DIRECT_WHATSAPP) {
+          conv.sourceType = ConversationSourceType.IMPORTED_LEAD;
+        }
+        updated = true;
+      }
+      if (
+        contactName &&
+        (!conv.contactName ||
+          conv.contactName.startsWith('WhatsApp User') ||
+          conv.contactName === 'WhatsApp Contact' ||
+          conv.contactName === `WhatsApp Contact (${cleanPhone})`)
+      ) {
+        conv.contactName = contactName;
+        updated = true;
+      }
+      if (!conv.assignedEmployeeId && assignedEmployeeId) {
+        conv.assignedEmployeeId = assignedEmployeeId;
+        updated = true;
+      }
+      if (updated) {
+        await conv.save();
+      }
+    } else {
+      conv = new this.conversationModel({
+        phoneNumber: cleanPhone,
+        contactName,
+        sourceType,
+        crmLeadId,
+        importedLeadId,
+        ownerId,
+        assignedEmployeeId,
+        status: ConversationStatus.ACTIVE,
+        unreadCount: 0,
+        isPinned: false,
+        lastMessage: 'Chat initialized',
+        lastMessageAt: new Date(),
+        lastMessageDirection: 'outgoing',
+      });
+      await conv.save();
+    }
+
+    const populated = (await this.conversationModel
+      .findById(conv._id)
+      .populate('assignedEmployeeId', 'name email role')
+      .populate('crmLeadId', 'leadId name phone requirement status assignedTo')
+      .populate('importedLeadId', 'name phone batchName assignedTo')
+      .lean()) as any;
+
+    if (!populated) {
+      throw new NotFoundException('Failed to retrieve initialized conversation');
+    }
+
+    const now = new Date();
+    const expiresAt = populated.windowExpiresAt ? new Date(populated.windowExpiresAt) : null;
+    const isWindowOpen = expiresAt ? expiresAt > now : false;
+    const remainingMs = expiresAt ? Math.max(0, expiresAt.getTime() - now.getTime()) : 0;
+    const remainingHours = Math.floor(remainingMs / (1000 * 60 * 60));
+    const remainingMinutes = Math.floor((remainingMs % (1000 * 60 * 60)) / (1000 * 60));
+
+    return {
+      ...populated,
+      isWindowOpen,
+      windowRemainingFormatted: isWindowOpen ? `${remainingHours}h ${remainingMinutes}m` : 'Expired',
+    };
+  }
+
+  /**
+   * 11. SEARCH CRM LEADS & IMPORTED LEADS TO INITIATE NEW CHATS DIRECTLY FROM INBOX
+   */
+  async searchLeads(user: any, q: string) {
+    if (!q || q.trim().length < 2) {
+      return { crmLeads: [], importedLeads: [] };
+    }
+    const cleanQ = q.trim();
+    const safeRegex = new RegExp(cleanQ.replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&'), 'i');
+
+    const [crmLeads, importedLeads] = await Promise.all([
+      this.leadModel
+        .find({
+          $or: [
+            { name: safeRegex },
+            { phone: safeRegex },
+            { whatsapp: safeRegex },
+            { leadId: safeRegex },
+            { company: safeRegex },
+          ],
+        })
+        .select('_id leadId name phone whatsapp company status assignedTo requirement')
+        .populate('assignedTo', 'name email')
+        .limit(8)
+        .lean(),
+      this.importedLeadModel
+        .find({
+          $or: [
+            { name: safeRegex },
+            { phoneNumber: safeRegex },
+            { phone: safeRegex },
+            { email: safeRegex },
+            { company: safeRegex },
+          ],
+        })
+        .select('_id name phoneNumber phone email company status')
+        .limit(8)
+        .lean(),
+    ]);
+
+    return { crmLeads, importedLeads };
+  }
 }

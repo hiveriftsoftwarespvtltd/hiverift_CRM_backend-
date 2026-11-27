@@ -9,6 +9,7 @@ import { Client, ClientSchema } from '../clients/schemas/client.schema';
 import { Quotation, QuotationSchema } from '../quotations/schemas/quotation.schema';
 import { Payment, PaymentSchema } from '../payments/schemas/payment.schema';
 import { User, UserSchema } from '../users/schemas/user.schema';
+import { WhatsappConversation, WhatsappConversationSchema } from '../whatsapp-campaigns/schemas/whatsapp-conversation.schema';
 import { NotificationsModule } from '../notifications/notifications.module';
 
 @Module({
@@ -20,6 +21,7 @@ import { NotificationsModule } from '../notifications/notifications.module';
       { name: Quotation.name, schema: QuotationSchema },
       { name: Payment.name, schema: PaymentSchema },
       { name: User.name, schema: UserSchema },
+      { name: WhatsappConversation.name, schema: WhatsappConversationSchema },
     ]),
     NotificationsModule,
   ],

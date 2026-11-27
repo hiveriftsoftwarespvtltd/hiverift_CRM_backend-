@@ -24,6 +24,12 @@ import {
   WhatsappImportBatch,
   WhatsappImportBatchDocument,
 } from '../schemas/whatsapp-import-batch.schema';
+import {
+  WhatsappConversation,
+  WhatsappConversationDocument,
+  ConversationSourceType,
+  ConversationStatus,
+} from '../schemas/whatsapp-conversation.schema';
 import { CreateImportedLeadDto, UpdateImportedLeadDto } from '../dto/imported-lead.dto';
 
 export function sanitizePhoneNumber(phoneStr?: any): string {
@@ -54,10 +60,56 @@ export class WhatsappLeadsService {
     private readonly importedLeadModel: Model<WhatsappImportedLeadDocument>,
     @InjectModel(WhatsappImportBatch.name)
     private readonly batchModel: Model<WhatsappImportBatchDocument>,
+    @InjectModel(WhatsappConversation.name)
+    private readonly conversationModel: Model<WhatsappConversationDocument>,
     @InjectModel(User.name) private readonly userModel: Model<UserDocument>,
     private readonly leadsService: LeadsService,
     private readonly auditService: AuditService,
   ) {}
+
+  /**
+   * Ensure newly added/imported WhatsApp leads appear in WhatsApp Inbox automatically.
+   */
+  private async syncImportedLeadsToInbox(leads: any[]): Promise<void> {
+    if (!leads?.length) return;
+    try {
+      const ops: any[] = [];
+      const now = new Date();
+      for (const lead of leads) {
+        const cleanPhone = sanitizePhoneNumber(lead.phoneNumber || lead.phone);
+        if (!cleanPhone || cleanPhone.length < 7) continue;
+        const ownerId = lead.ownerId || lead.createdBy || undefined;
+        ops.push({
+          updateOne: {
+            filter: { phoneNumber: cleanPhone },
+            update: {
+              $setOnInsert: {
+                phoneNumber: cleanPhone,
+                contactName: lead.name || `Imported Lead (${cleanPhone})`,
+                sourceType: lead.crmLeadId ? ConversationSourceType.CRM_LEAD : ConversationSourceType.IMPORTED_LEAD,
+                importedLeadId: lead._id,
+                crmLeadId: lead.crmLeadId || undefined,
+                ownerId,
+                assignedEmployeeId: ownerId,
+                status: ConversationStatus.ACTIVE,
+                unreadCount: 0,
+                isPinned: false,
+                lastMessage: 'Lead imported — click to send template',
+                lastMessageAt: now,
+                lastMessageDirection: 'outgoing',
+              },
+            },
+            upsert: true,
+          },
+        });
+      }
+      if (ops.length > 0) {
+        await this.conversationModel.bulkWrite(ops, { ordered: false });
+      }
+    } catch (err: any) {
+      this.logger.warn(`WhatsApp inbox sync skipped for imported leads: ${err?.message}`);
+    }
+  }
 
   // ==========================================
   // 1. CRM LEADS (READ-ONLY FOR CAMPAIGNS)
@@ -234,6 +286,7 @@ export class WhatsappLeadsService {
     });
 
     const saved = await lead.save();
+    await this.syncImportedLeadsToInbox([saved]);
 
     await this.auditService.log({
       userId: scope.userId,
@@ -289,6 +342,7 @@ export class WhatsappLeadsService {
     if (dto.status) lead.status = dto.status;
 
     const saved = await lead.save();
+    await this.syncImportedLeadsToInbox([saved]);
 
     await this.auditService.log({
       userId: scope.userId,
@@ -575,6 +629,7 @@ export class WhatsappLeadsService {
     let savedImportedLeads: any[] = [];
     if (leadsToInsert.length > 0) {
       savedImportedLeads = await this.importedLeadModel.insertMany(leadsToInsert, { ordered: false });
+      await this.syncImportedLeadsToInbox(savedImportedLeads);
     }
 
     // 2. If Super Admin opted to save to CRM:

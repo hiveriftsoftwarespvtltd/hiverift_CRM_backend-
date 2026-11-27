@@ -146,4 +146,43 @@ export class WhatsappInboxController {
       message: 'Marked as read',
     };
   }
+
+  /**
+   * POST /api/v1/whatsapp-campaigns/inbox/init-conversation
+   * Initialize or fetch existing WhatsApp conversation for a CRM Lead or Imported Lead
+   */
+  @Post('init-conversation')
+  @HttpCode(HttpStatus.OK)
+  async initConversation(
+    @Req() req: any,
+    @Body()
+    dto: {
+      leadId?: string;
+      crmLeadId?: string;
+      importedLeadId?: string;
+      phone?: string;
+      name?: string;
+    },
+  ) {
+    const user = req.user;
+    const conversation = await this.whatsappInboxService.initConversation(user, dto);
+    return {
+      success: true,
+      data: conversation,
+    };
+  }
+
+  /**
+   * GET /api/v1/whatsapp-campaigns/inbox/search-leads
+   * Search CRM Leads & Imported Leads to initiate new chats
+   */
+  @Get('search-leads')
+  async searchLeads(@Req() req: any, @Query('q') q: string) {
+    const user = req.user;
+    const res = await this.whatsappInboxService.searchLeads(user, q);
+    return {
+      success: true,
+      data: res,
+    };
+  }
 }

@@ -6,6 +6,12 @@ import { Client, ClientDocument } from '../clients/schemas/client.schema';
 import { Quotation, QuotationDocument } from '../quotations/schemas/quotation.schema';
 import { Payment, PaymentDocument } from '../payments/schemas/payment.schema';
 import { User, UserDocument } from '../users/schemas/user.schema';
+import {
+  WhatsappConversation,
+  WhatsappConversationDocument,
+  ConversationSourceType,
+  ConversationStatus,
+} from '../whatsapp-campaigns/schemas/whatsapp-conversation.schema';
 import { CreateLeadDto } from './dto/create-lead.dto';
 import { UpdateLeadDto } from './dto/update-lead.dto';
 import { CreateFollowupDto } from './dto/create-followup.dto';
@@ -35,7 +41,51 @@ export class LeadsService {
     @InjectModel(User.name) private userModel: Model<UserDocument>,
     private readonly notificationsService: NotificationsService,
     @Optional() private readonly leadRoundRobinService?: LeadRoundRobinService,
+    @Optional() @InjectModel(WhatsappConversation.name) private conversationModel?: Model<WhatsappConversationDocument>,
   ) { }
+
+  /**
+   * Ensure newly created/imported CRM leads appear in WhatsApp Inbox automatically.
+   */
+  private async syncLeadsToWhatsappInbox(leads: LeadDocument[]): Promise<void> {
+    if (!this.conversationModel || !leads?.length) return;
+    try {
+      const ops: any[] = [];
+      const now = new Date();
+      for (const lead of leads) {
+        const cleanPhone = sanitizePhone(lead.whatsapp || lead.phone);
+        if (!cleanPhone || cleanPhone.length < 7 || cleanPhone === '0000000000') continue;
+        const assigneeId = lead.assignedTo || lead.createdBy || undefined;
+        ops.push({
+          updateOne: {
+            filter: { phoneNumber: cleanPhone },
+            update: {
+              $setOnInsert: {
+                phoneNumber: cleanPhone,
+                contactName: lead.name || `Lead (${cleanPhone})`,
+                sourceType: ConversationSourceType.CRM_LEAD,
+                crmLeadId: lead._id,
+                ownerId: lead.createdBy || assigneeId,
+                assignedEmployeeId: assigneeId,
+                status: ConversationStatus.ACTIVE,
+                unreadCount: 0,
+                isPinned: false,
+                lastMessage: 'CRM Lead added — click to send template',
+                lastMessageAt: now,
+                lastMessageDirection: 'outgoing',
+              },
+            },
+            upsert: true,
+          },
+        });
+      }
+      if (ops.length > 0) {
+        await this.conversationModel.bulkWrite(ops, { ordered: false });
+      }
+    } catch {
+      // Non-blocking: never fail lead creation if WhatsApp inbox sync hits an edge case
+    }
+  }
 
   private async generateLeadId(): Promise<string> {
     const leads = await this.leadModel.find({}, { leadId: 1 }).lean();
@@ -215,6 +265,7 @@ export class LeadsService {
     });
 
     const savedLead = await newLead.save();
+    await this.syncLeadsToWhatsappInbox([savedLead]);
 
     // Trigger realtime notification to assigned rep & admin / management team
     try {
@@ -302,6 +353,7 @@ export class LeadsService {
 
     const lead = new this.leadModel(payload);
     const saved = await lead.save();
+    await this.syncLeadsToWhatsappInbox([saved]);
     return saved;
   }
 
@@ -801,6 +853,8 @@ export class LeadsService {
 
       createdLeads.push(saved);
     }
+
+    await this.syncLeadsToWhatsappInbox(createdLeads);
 
     return { importedCount: createdLeads.length, skippedCount, data: createdLeads };
   }
