@@ -1,4 +1,4 @@
-import { Injectable, Logger, OnModuleInit, OnModuleDestroy } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit, OnModuleDestroy, Optional } from '@nestjs/common';
 import { InjectModel } from '@nestjs/mongoose';
 import { Model, Types } from 'mongoose';
 import {
@@ -13,6 +13,8 @@ import {
 } from '../schemas/whatsapp-campaign-recipient.schema';
 import { MetaService } from '../../meta/meta.service';
 import { WhatsappInboxService } from './whatsapp-inbox.service';
+import { WhatsappOptoutService } from './whatsapp-optout.service';
+import { classifyMetaError } from '../meta-error-classifier.util';
 
 @Injectable()
 export class WhatsappQueueService implements OnModuleInit, OnModuleDestroy {
@@ -20,6 +22,8 @@ export class WhatsappQueueService implements OnModuleInit, OnModuleDestroy {
   private isProcessing = false;
   private intervalTimer: NodeJS.Timeout | null = null;
   private activeCampaignTasks = new Map<string, boolean>(); // campaignId -> isRunning
+  private taskTokens = new Map<string, number>(); // generation token to prevent pause/resume race
+  private tokenSeq = 0;
 
   constructor(
     @InjectModel(WhatsappCampaign.name)
@@ -28,6 +32,7 @@ export class WhatsappQueueService implements OnModuleInit, OnModuleDestroy {
     private readonly recipientModel: Model<WhatsappCampaignRecipientDocument>,
     private readonly metaService: MetaService,
     private readonly whatsappInboxService: WhatsappInboxService,
+    @Optional() private readonly optoutService?: WhatsappOptoutService,
   ) {}
 
   onModuleInit() {
@@ -65,6 +70,7 @@ export class WhatsappQueueService implements OnModuleInit, OnModuleDestroy {
    */
   signalCampaignStop(campaignId: string) {
     this.activeCampaignTasks.set(campaignId, false);
+    this.taskTokens.delete(campaignId);
   }
 
   private async processNextBatch() {
@@ -93,7 +99,7 @@ export class WhatsappQueueService implements OnModuleInit, OnModuleDestroy {
 
       for (const camp of runningCampaigns) {
         const campId = camp._id.toString();
-        if (!this.activeCampaignTasks.get(campId)) {
+        if (!this.activeCampaignTasks.get(campId) || !this.taskTokens.has(campId)) {
           this.enqueueCampaign(campId);
         }
       }
@@ -108,32 +114,44 @@ export class WhatsappQueueService implements OnModuleInit, OnModuleDestroy {
    * Sequential background processor for an individual campaign
    */
   async processCampaign(campaignIdStr: string) {
-    if (this.activeCampaignTasks.get(campaignIdStr)) {
-      return; // Already being processed
+    if (this.activeCampaignTasks.get(campaignIdStr) && this.taskTokens.has(campaignIdStr)) {
+      return; // Already being processed by an active token
     }
 
+    const myToken = ++this.tokenSeq;
     this.activeCampaignTasks.set(campaignIdStr, true);
+    this.taskTokens.set(campaignIdStr, myToken);
     this.logger.log(`Worker starting execution for Campaign: ${campaignIdStr}`);
+
+    const isStillActive = () =>
+      this.activeCampaignTasks.get(campaignIdStr) === true &&
+      this.taskTokens.get(campaignIdStr) === myToken;
 
     try {
       const campaignId = new Types.ObjectId(campaignIdStr);
 
-      while (this.activeCampaignTasks.get(campaignIdStr)) {
+      while (isStillActive()) {
         // Reload fresh campaign state
         const campaign = await this.campaignModel.findById(campaignId);
         if (!campaign) break;
 
-        // If paused, stopped, or completed, break out
-        if (campaign.status === CampaignStatus.PAUSED || campaign.status === CampaignStatus.STOPPED) {
-          this.logger.log(`Campaign ${campaignIdStr} is ${campaign.status}. Pausing execution.`);
+        // If not running (paused, stopped, completed), break out cleanly
+        if (campaign.status !== CampaignStatus.RUNNING) {
+          this.logger.log(`Campaign ${campaignIdStr} is ${campaign.status}. Halting worker loop.`);
           break;
         }
 
-        // Fetch the next pending recipient atomically
+        // Fetch the next pending recipient atomically (respecting exponential backoff nextRetryAt)
+        const now = new Date();
         const recipient: any = await this.recipientModel.findOneAndUpdate(
           {
             campaignId,
             status: RecipientStatus.PENDING,
+            $or: [
+              { nextRetryAt: null },
+              { nextRetryAt: { $exists: false } },
+              { nextRetryAt: { $lte: now } },
+            ],
           },
           {
             $set: { status: RecipientStatus.PROCESSING },
@@ -142,32 +160,56 @@ export class WhatsappQueueService implements OnModuleInit, OnModuleDestroy {
         );
 
         if (!recipient) {
-          // Check if any recipients are still in processing or if everything is done
-          const remainingPending = await this.recipientModel.countDocuments({
+          const remainingWaiting = await this.recipientModel.countDocuments({
             campaignId,
             status: { $in: [RecipientStatus.PENDING, RecipientStatus.PROCESSING] },
           });
 
-          if (remainingPending === 0) {
+          if (remainingWaiting === 0) {
             this.logger.log(`All recipients processed for Campaign: ${campaignIdStr}. Marking COMPLETED.`);
             campaign.status = CampaignStatus.COMPLETED;
             campaign.completedAt = new Date();
+            campaign.pendingCount = 0;
             await campaign.save();
+          } else {
+            // Backoff pending recipients waiting for nextRetryAt — pause loop until next heartbeat picks up
+            this.logger.log(`Campaign ${campaignIdStr} has ${remainingWaiting} recipient(s) awaiting retry backoff.`);
           }
+          break;
+        }
+
+        // Re-verify campaign was not paused/stopped right as we locked the recipient
+        const latestState = await this.campaignModel.findById(campaignId).select('status').lean();
+        if (!isStillActive() || latestState?.status !== CampaignStatus.RUNNING) {
+          recipient.status =
+            latestState?.status === CampaignStatus.STOPPED
+              ? RecipientStatus.SKIPPED
+              : RecipientStatus.PENDING;
+          await recipient.save();
           break;
         }
 
         // Process message sending
         await this.dispatchRecipientMessage(campaign, recipient);
 
-        // Configurable delay interval (e.g. 10s, 30s, 60s)
+        // Configurable interruptible delay interval (wakes up within 400ms on pause/stop)
         const delayMs = Math.max(1000, (campaign.delaySeconds || 10) * 1000);
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        const sleepUntil = Date.now() + delayMs;
+        while (Date.now() < sleepUntil && isStillActive()) {
+          await new Promise((resolve) =>
+            setTimeout(resolve, Math.min(400, Math.max(50, sleepUntil - Date.now()))),
+          );
+        }
       }
     } catch (err: any) {
       this.logger.error(`Exception during Campaign ${campaignIdStr} processing: ${err.message}`);
     } finally {
-      this.activeCampaignTasks.delete(campaignIdStr);
+      if (this.taskTokens.get(campaignIdStr) === myToken) {
+        this.activeCampaignTasks.delete(campaignIdStr);
+        this.taskTokens.delete(campaignIdStr);
+      } else if (!this.taskTokens.has(campaignIdStr)) {
+        this.activeCampaignTasks.delete(campaignIdStr);
+      }
     }
   }
 
@@ -179,6 +221,22 @@ export class WhatsappQueueService implements OnModuleInit, OnModuleDestroy {
     recipient: WhatsappCampaignRecipientDocument,
   ) {
     try {
+      // Eligibility re-check immediately before dispatch: skip opted-out contacts
+      if (this.optoutService) {
+        const suppressedSet = await this.optoutService.getOptedOutPhoneSet([recipient.phoneNumber]);
+        const normalizedRecipientPhone = String(recipient.phoneNumber || '').replace(/\D/g, '').slice(-10);
+        if (suppressedSet.has(recipient.phoneNumber) || suppressedSet.has(normalizedRecipientPhone)) {
+          recipient.status = RecipientStatus.SKIPPED;
+          recipient.errorMessage = 'Skipped: Contact opted out / unsubscribed';
+          await recipient.save();
+          await this.campaignModel.findByIdAndUpdate(campaign._id, {
+            $inc: { skippedCount: 1, pendingCount: -1 },
+          });
+          this.logger.log(`Skipped opted-out recipient ${recipient.phoneNumber} in campaign ${campaign.name}`);
+          return;
+        }
+      }
+
       const template = campaign.templateSnapshot;
       const mappings = campaign.variableMappings || {};
 
@@ -277,37 +335,38 @@ export class WhatsappQueueService implements OnModuleInit, OnModuleDestroy {
           importedLeadId: recipient.importedLeadId || (recipient.recipientSource === 'imported_lead' ? recipient.sourceLeadId : undefined),
         });
       } else {
-        const nonRetryableCodes = [132001, 132000, 190];
-        const isPermanentFailure =
-          (result.errorCode && nonRetryableCodes.includes(result.errorCode)) ||
-          (result.error && result.error.includes('does not exist in the translation'));
+        const classified = classifyMetaError(result.errorCode, result.error);
+        const isPermanentFailure = !classified.retryable;
 
-        // Check retry
         recipient.retryCount = isPermanentFailure
           ? (recipient.maxRetries || 2)
           : (recipient.retryCount || 0) + 1;
         recipient.errorMessage = result.error || 'Failed to dispatch WhatsApp message';
+        recipient.errorCategory = classified.category;
         if (result.errorCode) {
           recipient.errorCode = String(result.errorCode);
         }
 
         if (recipient.retryCount < (recipient.maxRetries || 2)) {
-          // Re-queue for next attempt
+          // Exponential backoff before retry (30s, 60s, 120s)
+          const backoffMs = Math.pow(2, recipient.retryCount - 1) * 30000;
           recipient.status = RecipientStatus.PENDING;
+          recipient.nextRetryAt = new Date(Date.now() + backoffMs);
           await recipient.save();
           this.logger.warn(
-            `Message failed for ${recipient.phoneNumber}. Retry ${recipient.retryCount}/${recipient.maxRetries}.`,
+            `Transient failure for ${recipient.phoneNumber} (${classified.label}). Retry ${recipient.retryCount}/${recipient.maxRetries} scheduled in ${backoffMs / 1000}s.`,
           );
         } else {
           recipient.status = RecipientStatus.FAILED;
           recipient.failedAt = new Date();
+          recipient.nextRetryAt = undefined;
           await recipient.save();
 
           await this.campaignModel.findByIdAndUpdate(campaign._id, {
             $inc: { failedCount: 1, pendingCount: -1 },
           });
           this.logger.error(
-            `Message permanently failed for ${recipient.phoneNumber}: ${recipient.errorMessage}`,
+            `Message failed [${classified.category}] for ${recipient.phoneNumber}: ${recipient.errorMessage}`,
           );
         }
       }

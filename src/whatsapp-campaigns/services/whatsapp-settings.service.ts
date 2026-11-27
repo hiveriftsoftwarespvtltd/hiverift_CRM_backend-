@@ -34,12 +34,18 @@ export class WhatsappSettingsService {
       wabaId: setting?.wabaId || envWabaId,
       phoneNumberId: setting?.phoneNumberId || envPhoneId,
       businessAccountId: setting?.businessAccountId || envWabaId,
+      metaAppId: setting?.metaAppId || this.configService.get<string>('META_APP_ID') || '',
+      apiVersion: setting?.apiVersion || this.configService.get<string>('META_GRAPH_API_VERSION') || 'v20.0',
+      defaultCountryCode: setting?.defaultCountryCode || '91',
+      defaultDelaySeconds: setting?.defaultDelaySeconds ?? 10,
+      lastQualityRating: setting?.lastQualityRating || '',
+      lastMessagingLimit: setting?.lastMessagingLimit || '',
       accessTokenMasked: maskedToken,
       hasAccessToken: !!actualToken,
       webhookVerifyToken: setting?.webhookVerifyToken || envVerifyToken,
       isVerified: setting?.isVerified ?? true,
       lastTestedAt: setting?.lastTestedAt,
-      webhookUrl: '/api/v1/whatsapp-campaigns/webhook',
+      webhookUrl: '/api/v1/meta/webhook',
     };
   }
 
@@ -49,6 +55,10 @@ export class WhatsappSettingsService {
     businessAccountId?: string;
     accessToken?: string;
     webhookVerifyToken?: string;
+    metaAppId?: string;
+    apiVersion?: string;
+    defaultCountryCode?: string;
+    defaultDelaySeconds?: number;
   }, userId?: string) {
     const updateData: any = {};
     if (dto.wabaId) updateData.wabaId = dto.wabaId.trim();
@@ -56,6 +66,10 @@ export class WhatsappSettingsService {
     if (dto.businessAccountId) updateData.businessAccountId = dto.businessAccountId.trim();
     if (dto.accessToken && !dto.accessToken.includes('...')) updateData.accessToken = dto.accessToken.trim();
     if (dto.webhookVerifyToken) updateData.webhookVerifyToken = dto.webhookVerifyToken.trim();
+    if (dto.metaAppId !== undefined) updateData.metaAppId = String(dto.metaAppId).trim();
+    if (dto.apiVersion) updateData.apiVersion = String(dto.apiVersion).trim();
+    if (dto.defaultCountryCode) updateData.defaultCountryCode = String(dto.defaultCountryCode).replace(/\D/g, '') || '91';
+    if (dto.defaultDelaySeconds !== undefined) updateData.defaultDelaySeconds = Math.max(1, Number(dto.defaultDelaySeconds) || 10);
     if (userId) updateData.updatedBy = new Types.ObjectId(userId);
 
     const setting = await this.settingModel.findOneAndUpdate(
@@ -81,7 +95,7 @@ export class WhatsappSettingsService {
     }
 
     try {
-      const url = `https://graph.facebook.com/${apiVersion}/${phoneId}?access_token=${encodeURIComponent(token)}`;
+      const url = `https://graph.facebook.com/${apiVersion}/${phoneId}?fields=display_phone_number,verified_name,quality_rating,code_verification_status,messaging_limit_tier&access_token=${encodeURIComponent(token)}`;
       const res = await fetch(url);
       const data = await res.json();
 
@@ -95,7 +109,14 @@ export class WhatsappSettingsService {
 
       await this.settingModel.findOneAndUpdate(
         {},
-        { $set: { isVerified: true, lastTestedAt: new Date() } },
+        {
+          $set: {
+            isVerified: true,
+            lastTestedAt: new Date(),
+            ...(data.quality_rating ? { lastQualityRating: data.quality_rating } : {}),
+            ...(data.messaging_limit_tier ? { lastMessagingLimit: data.messaging_limit_tier } : {}),
+          },
+        },
         { upsert: true },
       );
 
@@ -107,6 +128,7 @@ export class WhatsappSettingsService {
           verifiedName: data.verified_name,
           qualityRating: data.quality_rating,
           codeVerificationStatus: data.code_verification_status,
+          messagingLimitTier: data.messaging_limit_tier,
         },
       };
     } catch (err: any) {

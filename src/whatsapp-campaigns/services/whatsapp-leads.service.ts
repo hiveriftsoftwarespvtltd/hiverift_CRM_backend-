@@ -116,7 +116,7 @@ export class WhatsappLeadsService {
   // ==========================================
   async getCrmLeads(query: any, user: any) {
     const scope = getUserAccessScope(user);
-    const { search, status, source, assignedTo, page = 1, limit = 50 } = query;
+    const { search, status, source, assignedTo, startDate, endDate, page = 1, limit = 50 } = query;
     const andConditions: any[] = [];
 
     // Role-based filtering for CRM Leads:
@@ -151,6 +151,21 @@ export class WhatsappLeadsService {
 
     if (status && status !== 'all') {
       andConditions.push({ status });
+    }
+
+    if (startDate || endDate) {
+      const dateCond: any = {};
+      if (startDate) {
+        const s = new Date(startDate);
+        s.setHours(0, 0, 0, 0);
+        dateCond.$gte = s;
+      }
+      if (endDate) {
+        const e = new Date(endDate);
+        e.setHours(23, 59, 59, 999);
+        dateCond.$lte = e;
+      }
+      andConditions.push({ createdAt: dateCond });
     }
 
     if (source && source !== 'all') {
@@ -197,7 +212,7 @@ export class WhatsappLeadsService {
   // ==========================================
   async getImportedLeads(query: any, user: any) {
     const scope = getUserAccessScope(user);
-    const { search, batchId, status, employeeId, page = 1, limit = 50 } = query;
+    const { search, batchId, status, employeeId, startDate, endDate, page = 1, limit = 50 } = query;
     const andConditions: any[] = [];
 
     // Role-based filtering for Imported Leads:
@@ -236,6 +251,21 @@ export class WhatsappLeadsService {
 
     if (status && status !== 'all') {
       andConditions.push({ status });
+    }
+
+    if (startDate || endDate) {
+      const dateCond: any = {};
+      if (startDate) {
+        const s = new Date(startDate);
+        s.setHours(0, 0, 0, 0);
+        dateCond.$gte = s;
+      }
+      if (endDate) {
+        const e = new Date(endDate);
+        e.setHours(23, 59, 59, 999);
+        dateCond.$lte = e;
+      }
+      andConditions.push({ createdAt: dateCond });
     }
 
     const filter = andConditions.length > 0 ? { $and: andConditions } : {};
@@ -562,6 +592,7 @@ export class WhatsappLeadsService {
     let duplicateCount = 0;
     let invalidCount = 0;
     let skippedCount = 0;
+    const errorRows: Array<{ name: string; phone: string; email?: string; company?: string; reason: string }> = [];
 
     // Check existing phone numbers in DB to avoid duplicates
     const allPhones = records
@@ -576,25 +607,40 @@ export class WhatsappLeadsService {
     for (const row of records) {
       const rawPhone = row[phoneKey] || row.phone || row.phoneNumber;
       const cleanPhone = sanitizePhoneNumber(rawPhone);
+      const rawName = row[nameKey] || row.name || '';
+      const rawEmail = row[emailKey] || row.email || '';
+      const rawCompany = row[companyKey] || row.company || '';
 
       if (!cleanPhone || cleanPhone.length !== 10) {
         invalidCount++;
+        errorRows.push({
+          name: String(rawName || '').trim(),
+          phone: String(rawPhone || '').trim(),
+          email: String(rawEmail || '').trim(),
+          company: String(rawCompany || '').trim(),
+          reason: 'Invalid 10-digit mobile number',
+        });
         continue;
       }
 
       if (seenPhonesInBatch.has(cleanPhone) || existingPhonesSet.has(cleanPhone)) {
         duplicateCount++;
+        errorRows.push({
+          name: String(rawName || '').trim(),
+          phone: cleanPhone,
+          email: String(rawEmail || '').trim(),
+          company: String(rawCompany || '').trim(),
+          reason: seenPhonesInBatch.has(cleanPhone) ? 'Duplicate in uploaded file' : 'Already exists in Imported Leads',
+        });
         continue;
       }
 
       seenPhonesInBatch.add(cleanPhone);
 
-      const rawName = row[nameKey] || row.name || `Lead ${cleanPhone.slice(-4)}`;
-      const rawEmail = row[emailKey] || row.email || '';
-      const rawCompany = row[companyKey] || row.company || '';
+      const finalName = rawName || `Lead ${cleanPhone.slice(-4)}`;
 
       const importedDoc: any = {
-        name: String(rawName).trim(),
+        name: String(finalName).trim(),
         phoneNumber: cleanPhone,
         countryCode: '91',
         email: rawEmail ? String(rawEmail).toLowerCase().trim() : undefined,
@@ -694,6 +740,7 @@ export class WhatsappLeadsService {
         skippedRecords: duplicateCount + invalidCount,
         savedToCrm: allowSaveToCrm,
         crmCreatedCount,
+        errorRows: errorRows.slice(0, 1000),
       },
     };
   }
@@ -707,7 +754,40 @@ export class WhatsappLeadsService {
     if (scope.isSalesEmployee) {
       filter.importedBy = scope.userObjId;
     }
+    if (query?.search && String(query.search).trim()) {
+      const rx = new RegExp(String(query.search).trim().replace(/[-/\\^$*+?.()|[\]{}]/g, '\\$&'), 'i');
+      filter.$or = [{ batchId: rx }, { fileName: rx }, { importedByName: rx }];
+    }
     return await this.batchModel.find(filter).sort({ createdAt: -1 }).limit(100).lean();
+  }
+
+  async deleteImportBatch(batchId: string, deleteLeads: boolean, user: any) {
+    const scope = getUserAccessScope(user);
+    if (!scope.isSuperAdmin && !scope.isSalesHead) {
+      throw new ForbiddenException('Only Admins or Sales Managers can delete import batches');
+    }
+
+    const batch = await this.batchModel.findOne({ batchId });
+    if (!batch) {
+      throw new NotFoundException('Import batch not found');
+    }
+
+    let removedLeads = 0;
+    if (deleteLeads) {
+      const delRes = await this.importedLeadModel.deleteMany({ importBatchId: batchId });
+      removedLeads = delRes.deletedCount || 0;
+    }
+
+    await this.batchModel.deleteOne({ _id: batch._id });
+    await this.auditService.log({
+      userId: scope.userId,
+      action: 'delete_import_batch',
+      module: 'whatsapp_campaigns',
+      recordId: batchId,
+      description: `Deleted import batch ${batchId} (${batch.fileName}), removed ${removedLeads} leads`,
+    });
+
+    return { success: true, batchId, removedLeads };
   }
 
   async exportImportedLeadsCsv(ids?: string[], user?: any) {

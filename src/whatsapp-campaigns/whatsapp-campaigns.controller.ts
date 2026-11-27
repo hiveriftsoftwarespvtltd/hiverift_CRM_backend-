@@ -25,6 +25,7 @@ import { WhatsappLeadsService } from './services/whatsapp-leads.service';
 import { WhatsappTemplatesService } from './services/whatsapp-templates.service';
 import { WhatsappCampaignsService } from './services/whatsapp-campaigns.service';
 import { WhatsappSettingsService } from './services/whatsapp-settings.service';
+import { WhatsappOptoutService } from './services/whatsapp-optout.service';
 import { CreateImportedLeadDto, UpdateImportedLeadDto } from './dto/imported-lead.dto';
 import { CreateTemplateDto, UpdateTemplateDto } from './dto/template.dto';
 import { CreateCampaignDto } from './dto/campaign.dto';
@@ -37,6 +38,7 @@ export class WhatsappCampaignsController {
     private readonly templatesService: WhatsappTemplatesService,
     private readonly campaignsService: WhatsappCampaignsService,
     private readonly settingsService: WhatsappSettingsService,
+    private readonly optoutService: WhatsappOptoutService,
   ) {}
 
   // ==========================================
@@ -130,6 +132,17 @@ export class WhatsappCampaignsController {
     return { success: true, data };
   }
 
+  @Delete('import-batches/:batchId')
+  @Roles('super_admin', 'superadmin', 'admin', 'management')
+  async deleteImportBatch(
+    @Param('batchId') batchId: string,
+    @Query('deleteLeads') deleteLeads: string,
+    @CurrentUser() user: any,
+  ) {
+    const shouldDeleteLeads = deleteLeads === 'true' || deleteLeads === '1';
+    return await this.leadsService.deleteImportBatch(batchId, shouldDeleteLeads, user);
+  }
+
   @Get('sales-employees')
   @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
   async getSalesEmployees(@CurrentUser() user: any) {
@@ -197,6 +210,12 @@ export class WhatsappCampaignsController {
     return { success: true, data };
   }
 
+  @Post('campaigns/test-send')
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
+  async sendTestCampaign(@Body() body: any, @CurrentUser() user: any) {
+    return await this.campaignsService.sendTestCampaign(body, user);
+  }
+
   @Post('campaigns')
   @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
   async createCampaign(@Body() dto: CreateCampaignDto, @CurrentUser() user: any) {
@@ -227,6 +246,18 @@ export class WhatsappCampaignsController {
   @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
   async stopCampaign(@Param('id') id: string, @CurrentUser() user: any) {
     return await this.campaignsService.stopCampaign(id, user);
+  }
+
+  @Post('campaigns/:id/reschedule')
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
+  async rescheduleCampaign(@Param('id') id: string, @Body() body: any, @CurrentUser() user: any) {
+    return await this.campaignsService.rescheduleCampaign(id, body, user);
+  }
+
+  @Post('campaigns/:id/retry-failed')
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
+  async retryFailedRecipients(@Param('id') id: string, @CurrentUser() user: any) {
+    return await this.campaignsService.retryFailedRecipients(id, user);
   }
 
   @Delete('campaigns/:id')
@@ -266,6 +297,50 @@ export class WhatsappCampaignsController {
     res.setHeader('Content-Type', 'text/csv');
     res.setHeader('Content-Disposition', `attachment; filename=campaign_report_${id}_${Date.now()}.csv`);
     return res.send(csvData);
+  }
+
+  @Get('campaigns/:id/reports/export-excel')
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
+  async exportCampaignReportExcel(
+    @Param('id') id: string,
+    @Res() res: Response,
+    @Query('status') status?: string,
+    @CurrentUser() user?: any,
+  ) {
+    const buffer = await this.campaignsService.exportReportExcel(id, status, user);
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename=campaign_report_${id}_${Date.now()}.xlsx`);
+    return res.send(buffer);
+  }
+
+  // ==========================================
+  // OPT-OUT / SUPPRESSION MANAGEMENT
+  // ==========================================
+  @Get('opt-outs')
+  @Roles('super_admin', 'superadmin', 'admin', 'management', 'sales')
+  async listOptOuts(@Query() query: any) {
+    const data = await this.optoutService.listOptOuts(query);
+    return { success: true, data };
+  }
+
+  @Post('opt-outs')
+  @Roles('super_admin', 'superadmin', 'admin', 'management')
+  async addOptOut(@Body() body: { phoneNumber: string; contactName?: string; reason?: string }, @CurrentUser() user: any) {
+    const data = await this.optoutService.recordOptOut({
+      phoneNumber: body.phoneNumber,
+      contactName: body.contactName,
+      source: 'manual_admin',
+      reason: body.reason || 'manual',
+      userId: user?._id?.toString(),
+    });
+    return { success: true, message: 'Contact added to opt-out suppression list', data };
+  }
+
+  @Post('opt-outs/:id/resubscribe')
+  @Roles('super_admin', 'superadmin', 'admin', 'management')
+  async resubscribeOptOut(@Param('id') id: string, @Body('reason') reason: string, @CurrentUser() user: any) {
+    const data = await this.optoutService.resubscribe(id, reason, user);
+    return { success: true, message: 'Contact re-subscribed with verified consent', data };
   }
 
   // ==========================================

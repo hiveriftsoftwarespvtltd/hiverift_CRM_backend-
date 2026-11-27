@@ -185,4 +185,22 @@ export class WhatsappInboxController {
       data: res,
     };
   }
+
+  /**
+   * POST /api/v1/whatsapp-campaigns/inbox/conversations/:id/notes
+   * Add an internal CRM note to a WhatsApp conversation
+   */
+  @Post('conversations/:id/notes')
+  @HttpCode(HttpStatus.OK)
+  async addInternalNote(
+    @Param('id') conversationId: string,
+    @Req() req: any,
+    @Body('text') text: string,
+  ) {
+    const data = await this.whatsappInboxService.addInternalNote(conversationId, req.user, text);
+    return {
+      success: true,
+      data,
+    };
+  }
 }

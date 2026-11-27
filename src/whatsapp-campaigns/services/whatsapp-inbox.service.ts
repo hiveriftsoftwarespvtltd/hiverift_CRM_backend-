@@ -38,6 +38,7 @@ import {
 } from '../schemas/whatsapp-imported-lead.schema';
 import { User, UserDocument } from '../../users/schemas/user.schema';
 import { MetaService } from '../../meta/meta.service';
+import { WhatsappOptoutService } from './whatsapp-optout.service';
 import { getUserAccessScope, UserAccessScope } from '../whatsapp-permissions.util';
 
 function sanitizePhone(phoneStr?: string): string {
@@ -73,6 +74,7 @@ export class WhatsappInboxService {
     private readonly templateModel: Model<WhatsappTemplateDocument>,
     @Inject(forwardRef(() => MetaService))
     private readonly metaService: MetaService,
+    @Optional() private readonly optoutService?: WhatsappOptoutService,
   ) {}
 
   /**
@@ -317,6 +319,24 @@ export class WhatsappInboxService {
     });
 
     const savedMessage = await inboxMessage.save();
+
+    // Auto-detect STOP / UNSUBSCRIBE / NOT INTERESTED opt-out keywords
+    if (this.optoutService && messageContent) {
+      const optOutMatch = this.optoutService.detectOptOutKeyword(messageContent);
+      if (optOutMatch?.matched) {
+        this.optoutService
+          .recordOptOut({
+            phoneNumber: cleanPhone,
+            contactName,
+            source: 'whatsapp_reply',
+            reason: optOutMatch.reason,
+            triggerMessage: messageContent,
+          })
+          .catch((optErr) =>
+            this.logger.warn(`Opt-out auto-record warning for ${cleanPhone}: ${optErr?.message}`),
+          );
+      }
+    }
 
     // Mark event processed
     await this.webhookEventModel.updateOne(
@@ -609,8 +629,8 @@ export class WhatsappInboxService {
     const conversation = await this.conversationModel
       .findById(conversationId)
       .populate('assignedEmployeeId', 'name email role')
-      .populate('crmLeadId', 'leadId name phone requirement status assignedTo')
-      .populate('importedLeadId', 'name phone batchName assignedTo')
+      .populate('crmLeadId', 'leadId name phone whatsapp email company city requirement status assignedTo')
+      .populate('importedLeadId', 'name phoneNumber email company importBatchId status whatsappOptIn createdAt')
       .lean();
 
     if (!conversation) {
@@ -1147,5 +1167,40 @@ export class WhatsappInboxService {
     ]);
 
     return { crmLeads, importedLeads };
+  }
+
+  /**
+   * 12. ADD INTERNAL PRIVATE NOTE TO CONVERSATION
+   */
+  async addInternalNote(conversationId: string, user: any, text: string) {
+    if (!Types.ObjectId.isValid(conversationId)) {
+      throw new BadRequestException('Invalid conversation ID');
+    }
+    const cleanText = String(text || '').trim();
+    if (!cleanText) {
+      throw new BadRequestException('Note text is required');
+    }
+
+    const scope = getUserAccessScope(user);
+    const note = {
+      _id: new Types.ObjectId(),
+      authorName: scope.userName || user?.name || 'CRM User',
+      text: cleanText,
+      createdAt: new Date(),
+    };
+
+    const updated = await this.conversationModel
+      .findByIdAndUpdate(
+        conversationId,
+        { $push: { notes: note } },
+        { new: true },
+      )
+      .lean();
+
+    if (!updated) {
+      throw new NotFoundException('Conversation not found');
+    }
+
+    return { note, notes: updated.notes || [] };
   }
 }

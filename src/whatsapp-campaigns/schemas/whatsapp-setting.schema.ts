@@ -26,6 +26,24 @@ export class WhatsappSetting {
   @Prop({ type: Date })
   lastTestedAt?: Date;
 
+  @Prop({ trim: true, default: 'v20.0' })
+  apiVersion?: string;
+
+  @Prop({ trim: true, default: '91' })
+  defaultCountryCode?: string;
+
+  @Prop({ type: Number, default: 10 })
+  defaultDelaySeconds?: number;
+
+  @Prop({ trim: true, default: '' })
+  metaAppId?: string;
+
+  @Prop({ trim: true, default: '' })
+  lastQualityRating?: string;
+
+  @Prop({ trim: true, default: '' })
+  lastMessagingLimit?: string;
+
   @Prop({ type: Types.ObjectId, ref: 'User' })
   updatedBy?: Types.ObjectId;
 }

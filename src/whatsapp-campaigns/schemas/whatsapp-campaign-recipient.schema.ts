@@ -81,6 +81,12 @@ export class WhatsappCampaignRecipient {
   @Prop({ trim: true })
   errorCode?: string;
 
+  @Prop({ trim: true })
+  errorCategory?: string;
+
+  @Prop({ type: Date })
+  nextRetryAt?: Date;
+
   @Prop({ default: 0 })
   retryCount: number;
 

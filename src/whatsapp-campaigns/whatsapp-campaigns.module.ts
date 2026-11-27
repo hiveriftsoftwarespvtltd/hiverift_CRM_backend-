@@ -36,6 +36,10 @@ import {
   WhatsappWebhookEvent,
   WhatsappWebhookEventSchema,
 } from './schemas/whatsapp-webhook-event.schema';
+import {
+  WhatsappOptout,
+  WhatsappOptoutSchema,
+} from './schemas/whatsapp-optout.schema';
 
 import { Lead, LeadSchema } from '../leads/schemas/lead.schema';
 import { User, UserSchema } from '../users/schemas/user.schema';
@@ -52,6 +56,7 @@ import { WhatsappCampaignsService } from './services/whatsapp-campaigns.service'
 import { WhatsappQueueService } from './services/whatsapp-queue.service';
 import { WhatsappSettingsService } from './services/whatsapp-settings.service';
 import { WhatsappInboxService } from './services/whatsapp-inbox.service';
+import { WhatsappOptoutService } from './services/whatsapp-optout.service';
 
 @Module({
   imports: [
@@ -65,6 +70,7 @@ import { WhatsappInboxService } from './services/whatsapp-inbox.service';
       { name: WhatsappConversation.name, schema: WhatsappConversationSchema },
       { name: WhatsappInboxMessage.name, schema: WhatsappInboxMessageSchema },
       { name: WhatsappWebhookEvent.name, schema: WhatsappWebhookEventSchema },
+      { name: WhatsappOptout.name, schema: WhatsappOptoutSchema },
       { name: Lead.name, schema: LeadSchema },
       { name: User.name, schema: UserSchema },
     ]),
@@ -81,12 +87,14 @@ import { WhatsappInboxService } from './services/whatsapp-inbox.service';
     WhatsappQueueService,
     WhatsappSettingsService,
     WhatsappInboxService,
+    WhatsappOptoutService,
   ],
   exports: [
     WhatsappCampaignsService,
     WhatsappLeadsService,
     WhatsappTemplatesService,
     WhatsappInboxService,
+    WhatsappOptoutService,
   ],
 })
 export class WhatsappCampaignsModule {}
