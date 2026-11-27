@@ -13,74 +13,119 @@ export class MetaService {
 
 
   /**
-   * Fetches lead details from Meta Graph API using leadgen_id
-   * GET /{version}/{leadgen_id}?access_token={page_access_token}
+   * Fetches lead details from Meta Graph API using leadgen_id.
+   * Supports dedicated META_LEAD_ADS_ACCESS_TOKEN (or falls back to META_PAGE_ACCESS_TOKEN)
+   * and automatically attempts Page Access Token exchange if pageId is provided.
    */
-  async getLeadDetails(leadgenId: string): Promise<MetaLeadGraphResponse | null> {
-    const pageAccessToken = this.configService.get<string>('META_PAGE_ACCESS_TOKEN');
-    const apiVersion = this.configService.get<string>('META_GRAPH_API_VERSION') || META_CONSTANTS.DEFAULT_GRAPH_API_VERSION;
+  async getLeadDetailsWithError(
+    leadgenId: string,
+    pageId?: string,
+  ): Promise<{ data: MetaLeadGraphResponse | null; error?: string; errorCode?: number }> {
+    const leadToken =
+      this.configService.get<string>('META_LEAD_ADS_ACCESS_TOKEN') ||
+      this.configService.get<string>('META_PAGE_ACCESS_TOKEN');
+    const apiVersion =
+      this.configService.get<string>('META_GRAPH_API_VERSION') || META_CONSTANTS.DEFAULT_GRAPH_API_VERSION;
 
-    if (!pageAccessToken || pageAccessToken.includes('your_meta_page_access_token')) {
-      this.logger.warn(`META_PAGE_ACCESS_TOKEN is not configured. Skipping Graph API fetch for leadgen_id: ${leadgenId}`);
-      return null;
+    if (!leadToken || leadToken.includes('your_meta_page_access_token')) {
+      const msg = 'META_LEAD_ADS_ACCESS_TOKEN / META_PAGE_ACCESS_TOKEN is not configured';
+      this.logger.warn(`${msg}. Skipping Graph API fetch for leadgen_id: ${leadgenId}`);
+      return { data: null, error: msg };
     }
 
-    const fields = 'id,created_time,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id,form_name,platform,field_data';
-    const url = `${META_CONSTANTS.GRAPH_API_BASE_URL}/${apiVersion}/${leadgenId}?fields=${fields}&access_token=${encodeURIComponent(pageAccessToken)}`;
+    const fields =
+      'id,created_time,ad_id,ad_name,adset_id,adset_name,campaign_id,campaign_name,form_id,form_name,platform,field_data';
 
-    const maxRetries = 2;
-    let attempt = 0;
+    const fetchWithToken = async (
+      tokenToUse: string,
+    ): Promise<{ data: MetaLeadGraphResponse | null; error?: string; errorCode?: number; status?: number }> => {
+      const url = `${META_CONSTANTS.GRAPH_API_BASE_URL}/${apiVersion}/${leadgenId}?fields=${fields}&access_token=${encodeURIComponent(tokenToUse)}`;
+      const maxRetries = 2;
+      let attempt = 0;
 
-    while (attempt < maxRetries) {
-      attempt++;
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 10000); // 10s timeout
+      while (attempt < maxRetries) {
+        attempt++;
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 10000);
 
-      try {
-        this.logger.log(`Fetching Meta Lead Details for leadgen_id=${leadgenId} (Attempt ${attempt}/${maxRetries})`);
-        
-        const response = await fetch(url, {
-          method: 'GET',
-          headers: { 'Accept': 'application/json' },
-          signal: controller.signal,
-        });
+        try {
+          this.logger.log(`Fetching Meta Lead Details for leadgen_id=${leadgenId} (Attempt ${attempt}/${maxRetries})`);
+          const response = await fetch(url, {
+            method: 'GET',
+            headers: { Accept: 'application/json' },
+            signal: controller.signal,
+          });
+          clearTimeout(timeoutId);
 
-        clearTimeout(timeoutId);
+          if (!response.ok) {
+            const errorJson = await response.json().catch(() => ({}));
+            const errorMsg = errorJson?.error?.message || `HTTP ${response.status} ${response.statusText}`;
+            const errorCode = errorJson?.error?.code;
+            this.logger.error(
+              `Meta Graph API Error for leadgen_id=${leadgenId}: ${errorMsg} (Code: ${errorCode || 'N/A'})`,
+            );
 
-        if (!response.ok) {
-          const errorJson = await response.json().catch(() => ({}));
-          const errorMsg = errorJson?.error?.message || `HTTP ${response.status} ${response.statusText}`;
-          this.logger.error(`Meta Graph API Error for leadgen_id=${leadgenId}: ${errorMsg} (Code: ${errorJson?.error?.code || 'N/A'})`);
+            if ((response.status >= 500 || response.status === 429) && attempt < maxRetries) {
+              await new Promise((r) => setTimeout(r, 1000 * attempt));
+              continue;
+            }
+            return { data: null, error: errorMsg, errorCode, status: response.status };
+          }
 
-          // Rate limit or transient error - retry once
-          if ((response.status >= 500 || response.status === 429) && attempt < maxRetries) {
+          const data: MetaLeadGraphResponse = await response.json();
+          this.logger.log(`Successfully retrieved Meta Lead data for leadgen_id=${leadgenId}`);
+          return { data };
+        } catch (err: any) {
+          clearTimeout(timeoutId);
+          const isAbort = err?.name === 'AbortError';
+          const msg = isAbort ? 'Request Timeout (10s)' : err?.message || 'Network Failure';
+          this.logger.error(`Meta Graph API Request Failed for leadgen_id=${leadgenId}: ${msg}`);
+          if (attempt < maxRetries) {
             await new Promise((r) => setTimeout(r, 1000 * attempt));
             continue;
           }
-
-          return null;
+          return { data: null, error: msg };
         }
+      }
+      return { data: null, error: 'Unknown Graph API error' };
+    };
 
-        const data: MetaLeadGraphResponse = await response.json();
-        this.logger.log(`Successfully retrieved Meta Lead data for leadgen_id=${leadgenId}`);
-        return data;
-      } catch (err: any) {
-        clearTimeout(timeoutId);
-        const isAbort = err?.name === 'AbortError';
-        const msg = isAbort ? 'Request Timeout (10s)' : (err?.message || 'Network Failure');
-        
-        this.logger.error(`Meta Graph API Request Failed for leadgen_id=${leadgenId}: ${msg}`);
+    // 1. Primary attempt with configured token
+    const primary = await fetchWithToken(leadToken);
+    if (primary.data) {
+      return { data: primary.data };
+    }
 
-        if (attempt < maxRetries) {
-          await new Promise((r) => setTimeout(r, 1000 * attempt));
-          continue;
+    // 2. Fallback: If pageId is known, try exchanging User/System-User token for a Page Access Token
+    if (pageId) {
+      try {
+        const pageTokenRes = await fetch(
+          `${META_CONSTANTS.GRAPH_API_BASE_URL}/${apiVersion}/${pageId}?fields=access_token&access_token=${encodeURIComponent(leadToken)}`,
+        );
+        if (pageTokenRes.ok) {
+          const pageData = await pageTokenRes.json().catch(() => ({}));
+          if (pageData?.access_token && pageData.access_token !== leadToken) {
+            const retryWithPage = await fetchWithToken(pageData.access_token);
+            if (retryWithPage.data) {
+              return { data: retryWithPage.data };
+            }
+          }
         }
-
-        return null;
+      } catch {
+        // ignore fallback exchange errors; return primary error
       }
     }
 
-    return null;
+    return { data: null, error: primary.error, errorCode: primary.errorCode };
+  }
+
+  /**
+   * Fetches lead details from Meta Graph API using leadgen_id
+   * GET /{version}/{leadgen_id}?access_token={page_access_token}
+   */
+  async getLeadDetails(leadgenId: string, pageId?: string): Promise<MetaLeadGraphResponse | null> {
+    const { data } = await this.getLeadDetailsWithError(leadgenId, pageId);
+    return data;
   }
 
   /**

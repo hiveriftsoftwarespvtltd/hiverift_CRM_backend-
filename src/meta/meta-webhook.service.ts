@@ -462,10 +462,14 @@ export class MetaWebhookService {
     }
 
     // 2. Fetch Lead Details from Meta Graph API
-    const graphData = await this.metaService.getLeadDetails(leadgenId);
+    const { data: graphData, error: graphError, errorCode: graphErrorCode } =
+      await this.metaService.getLeadDetailsWithError(leadgenId, metaEventData?.page_id);
 
     // 3. Map Fields
-    const mapped = this.mapMetaLeadData(leadgenId, graphData, metaEventData);
+    const mapped = this.mapMetaLeadData(leadgenId, graphData, {
+      ...(metaEventData || {}),
+      ...(graphError ? { syncError: graphError, syncErrorCode: graphErrorCode } : {}),
+    });
 
     const cleanPhone = sanitizePhone(mapped.phone);
     const finalPhone = cleanPhone && cleanPhone.length === 10 ? cleanPhone : (mapped.phone ? String(mapped.phone).slice(-10) : '0000000000');
@@ -510,6 +514,22 @@ export class MetaWebhookService {
     const leadId = await this.generateLeadId();
     const assignee = await this.resolveAutoAssignee();
 
+    const notesArr: any[] = [];
+    if (assignee) {
+      notesArr.push({
+        _id: new Types.ObjectId(),
+        text: `Auto-assigned to ${assignee.name} via Round Robin`,
+        createdAt: new Date(),
+      });
+    }
+    if (graphError) {
+      notesArr.push({
+        _id: new Types.ObjectId(),
+        text: `Meta Graph API could not fetch contact details (${graphErrorCode || 'Error'}): ${graphError}`,
+        createdAt: new Date(),
+      });
+    }
+
     const newLead = new this.leadModel({
       leadId,
       name: mapped.name || 'Facebook Lead',
@@ -534,15 +554,7 @@ export class MetaWebhookService {
       metaRawData: mapped.metaRawData,
       assignedTo: assignee ? assignee._id : undefined,
       createdBy: undefined,
-      notes: assignee
-        ? [
-            {
-              _id: new Types.ObjectId(),
-              text: `Auto-assigned to ${assignee.name} via Round Robin`,
-              createdAt: new Date(),
-            },
-          ]
-        : [],
+      notes: notesArr,
     });
 
     let savedLead: LeadDocument;
@@ -560,7 +572,21 @@ export class MetaWebhookService {
       throw saveErr;
     }
 
-    // 6. Notify Assigned Rep & Admins
+    // 6. Auto-sync valid Meta Lead to WhatsApp Inbox & notify Assigned Rep & Admins
+    if (this.whatsappInboxService && finalPhone && finalPhone !== '0000000000') {
+      this.whatsappInboxService
+        .initConversation(
+          { _id: assignee?._id, role: 'admin' },
+          {
+            leadId: savedLead._id?.toString(),
+            crmLeadId: savedLead.leadId,
+            phone: finalPhone,
+            name: savedLead.name,
+          },
+        )
+        .catch((err) => this.logger.warn(`WhatsApp Inbox sync skipped for ${savedLead.leadId}: ${err?.message}`));
+    }
+
     await this.notifyLeadCreation(
       savedLead,
       assignee,
@@ -570,6 +596,81 @@ export class MetaWebhookService {
     );
 
     return savedLead;
+  }
+
+  /**
+   * Re-fetch incomplete Meta Leads (name='Meta Lead' or phone='0000000000') from Meta Graph API
+   * once App is in Live Mode and token has leads_retrieval permission.
+   */
+  async resyncIncompleteMetaLeads(): Promise<{
+    totalChecked: number;
+    updatedCount: number;
+    failedCount: number;
+    details: Array<{ leadId: string; status: string; message?: string }>;
+  }> {
+    const incomplete = await this.leadModel
+      .find({
+        source: LeadSource.META,
+        metaLeadId: { $exists: true, $ne: '' },
+        $or: [{ phone: '0000000000' }, { name: 'Meta Lead' }, { name: 'Facebook Lead' }],
+      })
+      .sort({ createdAt: -1 })
+      .limit(50);
+
+    let updatedCount = 0;
+    let failedCount = 0;
+    const details: Array<{ leadId: string; status: string; message?: string }> = [];
+
+    for (const lead of incomplete) {
+      const leadgenId = lead.metaLeadId!;
+      const pageId = (lead.metaRawData as any)?.page_id;
+      const { data: graphData, error } = await this.metaService.getLeadDetailsWithError(leadgenId, pageId);
+
+      if (!graphData) {
+        failedCount++;
+        details.push({ leadId: lead.leadId, status: 'failed', message: error || 'Graph API returned empty' });
+        continue;
+      }
+
+      const mapped = this.mapMetaLeadData(leadgenId, graphData, lead.metaRawData as any);
+      const cleanPhone = sanitizePhone(mapped.phone);
+      const finalPhone =
+        cleanPhone && cleanPhone.length === 10
+          ? cleanPhone
+          : mapped.phone && mapped.phone !== '0000000000'
+          ? String(mapped.phone).slice(-10)
+          : lead.phone;
+
+      if (mapped.name && mapped.name !== 'Meta Lead') lead.name = mapped.name;
+      if (finalPhone && finalPhone !== '0000000000') {
+        lead.phone = finalPhone;
+        lead.whatsapp = finalPhone;
+      }
+      if (mapped.email) lead.email = String(mapped.email).toLowerCase().trim();
+      if (mapped.company) lead.company = mapped.company;
+      if (mapped.city) lead.city = mapped.city;
+      if (mapped.requirement) lead.requirement = mapped.requirement;
+      if (mapped.campaignName) lead.campaignName = mapped.campaignName;
+      if (mapped.adSetName) lead.adSetName = mapped.adSetName;
+      if (mapped.adName) lead.adName = mapped.adName;
+      if (mapped.formName) lead.formName = mapped.formName;
+      lead.metaRawData = mapped.metaRawData;
+      await lead.save();
+
+      if (this.whatsappInboxService && finalPhone && finalPhone !== '0000000000') {
+        this.whatsappInboxService
+          .initConversation(
+            { _id: lead.assignedTo, role: 'admin' },
+            { leadId: lead._id?.toString(), crmLeadId: lead.leadId, phone: finalPhone, name: lead.name },
+          )
+          .catch(() => {});
+      }
+
+      updatedCount++;
+      details.push({ leadId: lead.leadId, status: 'updated', message: `${lead.name} (${lead.phone})` });
+    }
+
+    return { totalChecked: incomplete.length, updatedCount, failedCount, details };
   }
 
   /**
@@ -611,19 +712,29 @@ export class MetaWebhookService {
 
       if (!val) continue;
 
-      if (fieldKey === 'full_name' || fieldKey === 'name') {
+      if (fieldKey === 'full_name' || fieldKey === 'name' || fieldKey.includes('full_name')) {
         fullName = val;
-      } else if (fieldKey === 'first_name') {
+      } else if (fieldKey === 'first_name' || fieldKey.includes('first_name')) {
         firstName = val;
-      } else if (fieldKey === 'last_name') {
+      } else if (fieldKey === 'last_name' || fieldKey.includes('last_name')) {
         lastName = val;
-      } else if (fieldKey === 'phone_number' || fieldKey === 'phone' || fieldKey === 'contact_number' || fieldKey === 'mobile') {
+      } else if (
+        fieldKey === 'phone_number' ||
+        fieldKey === 'phone' ||
+        fieldKey === 'contact_number' ||
+        fieldKey === 'mobile' ||
+        fieldKey === 'mobile_number' ||
+        fieldKey === 'whatsapp_number' ||
+        fieldKey.includes('phone') ||
+        fieldKey.includes('mobile') ||
+        fieldKey.includes('whatsapp')
+      ) {
         result.phone = val;
-      } else if (fieldKey === 'email' || fieldKey === 'email_address') {
+      } else if (fieldKey === 'email' || fieldKey === 'email_address' || fieldKey.includes('email')) {
         result.email = val;
-      } else if (fieldKey === 'company_name' || fieldKey === 'organization' || fieldKey === 'company') {
+      } else if (fieldKey === 'company_name' || fieldKey === 'organization' || fieldKey === 'company' || fieldKey.includes('company')) {
         result.company = val;
-      } else if (fieldKey === 'city' || fieldKey === 'location') {
+      } else if (fieldKey === 'city' || fieldKey === 'location' || fieldKey.includes('city')) {
         result.city = val;
       } else {
         requirementNotes.push(`${field.name}: ${val}`);

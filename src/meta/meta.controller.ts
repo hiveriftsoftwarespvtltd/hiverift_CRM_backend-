@@ -510,4 +510,19 @@ export class MetaController {
       clearedCount,
     };
   }
+
+  /**
+   * POST /api/v1/meta/resync-leads
+   * Re-fetches incomplete Meta Leads (phone='0000000000') from Meta Graph API
+   */
+  @Post('resync-leads')
+  @UseGuards(JwtAuthGuard)
+  @HttpCode(HttpStatus.OK)
+  async resyncIncompleteLeads() {
+    const res = await this.metaWebhookService.resyncIncompleteMetaLeads();
+    return {
+      success: true,
+      data: res,
+    };
+  }
 }
